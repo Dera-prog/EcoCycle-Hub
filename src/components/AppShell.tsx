@@ -25,7 +25,7 @@ const appNav = [
 ];
 
 export default function AppShell() {
-  const { unreadCount, notifications, markAllRead, user, persona } = useApp();
+  const { unreadCount, notifications, markAllRead, user, persona, signOut } = useApp();
   const [panel, setPanel] = useState<'notifications' | 'profile' | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -169,6 +169,7 @@ export default function AppShell() {
             className="signout-btn"
             onClick={() => {
               setPanel(null);
+              signOut();
               navigate('/sign-in');
             }}
           >

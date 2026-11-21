@@ -33,7 +33,7 @@
 
 ## What's inside
 
-A complete, clickable product — marketing site plus the full consumer app — running entirely in the browser with a localStorage demo store (no backend required).
+A complete, clickable product — marketing site plus the full consumer app. The public demo runs entirely in the browser with a localStorage store, and the same app can run against a real **Fastify + PostgreSQL** API in Docker (see [Backend](#backend-docker--postgresql)).
 
 ### Marketing site
 
@@ -72,16 +72,62 @@ Click **Sign In** or **Create Account** — those are the only two doors into th
 - **React Router 7**
 - **lucide-react** icons
 - Hand-written CSS design system (no UI framework) — forest/leaf/sky/earth palette
-- State: React context + `localStorage` (`ecocycle-demo-v2`), no server
+- State: React context, `localStorage` by default (`ecocycle-demo-v2`), or the REST API when `VITE_API_URL` is set
+- Backend: **Fastify 5** + **PostgreSQL 16** + JWT auth, containerised with **Docker Compose**
 
 ## Getting started
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # http://localhost:5173 (demo mode)
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
 ```
+
+## Backend (Docker + PostgreSQL)
+
+The API is a Fastify 5 service in `server/` backed by PostgreSQL 16. Both run in containers, so the host needs only Docker (with WSL 2 on Windows). Data is seeded automatically on first boot.
+
+```bash
+docker compose up -d --build     # db on :5436, api on :4001
+curl http://localhost:4001/api/health
+docker compose down              # stop (keep data)
+docker compose down -v           # stop and wipe the database
+```
+
+From WSL on Windows, run the same commands from the repo directory:
+
+```bash
+wsl -d Ubuntu
+cd /mnt/c/Users/Chizoba/Documents/Qoder/2026-11-14/2ed0a2eb
+docker compose up -d --build
+```
+
+To point the frontend at the API, keep `.env.development` (already in the repo):
+
+```
+VITE_API_URL=http://localhost:4001
+```
+
+Restart `npm run dev` after changing it. Removing the variable — or building without it, as Vercel does — returns the app to localStorage demo mode. If the API is unreachable, the app probes `/api/health` at startup and falls back to demo mode automatically.
+
+Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New accounts start empty.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | liveness + database check |
+| `GET` | `/api/categories` | waste categories and per-kg rates |
+| `POST` | `/api/auth/signup` | create account, returns JWT + state |
+| `POST` | `/api/auth/signin` | sign in, returns JWT + state |
+| `GET` | `/api/me` | current snapshot (auth) |
+| `GET`/`POST` | `/api/collections` | list / schedule a pickup (auth) |
+| `PATCH`/`DELETE` | `/api/collections/:id` | reschedule/cancel (auth) |
+| `POST` | `/api/wallet/withdraw` | withdraw to bank (auth) |
+| `PUT` | `/api/bank-account` | update payout account (auth) |
+| `POST` | `/api/notifications/read-all` | mark notifications read (auth) |
+| `POST` | `/api/demo/reset` | restore the seeded state (auth) |
+
+Every mutation returns the full updated snapshot (`{ state }`), which the frontend swaps in directly. Schema DDL and seed data live in `server/src/db.ts` and run idempotently at startup.
 
 ## Project structure
 
@@ -89,12 +135,18 @@ npm run preview    # serve the production build
 src/
 ├── App.tsx              # routes, marketing layout, header/footer, titles
 ├── data.ts              # categories, products, testimonials, plans, seed data
-├── store.tsx            # demo store: personas, pickups, wallet, notifications
+├── store.tsx            # app store: localStorage demo or REST API
 ├── styles.css           # design system + all component styles
 ├── components/          # AppShell, DashHeader, ExploreMore, UI primitives
 └── pages/               # Home, HowItWorks, Categories, Impact, Products,
                          # Pricing, SignIn, SignUp, Dashboard, Schedule,
                          # Wallet, EcoImpact, TrackAgent
+server/
+├── src/index.ts         # Fastify bootstrap
+├── src/db.ts            # schema, seed, snapshot queries
+├── src/auth.ts          # JWT sign/verify + auth hook
+└── src/routes/          # auth, collections, wallet, misc
+docker-compose.yml       # db + api services
 ```
 
 ## Deployment
@@ -103,6 +155,7 @@ Deployed on **Vercel** at https://ecocycle-hub.vercel.app. Pushes to `main` depl
 
 ## Demo notes
 
-- This is a front-end demo: no real accounts, payments, or pickups are created.
+- The public deployment is a front-end demo: no real accounts, payments, or pickups are created.
 - Demo state is stored in your browser's `localStorage`; clear it to reset.
 - Sign In loads the seeded "returning user" persona; Sign Up creates an empty persona.
+- With the Docker backend running, accounts, pickups and withdrawals are real rows in PostgreSQL; the public deployment never points at it.

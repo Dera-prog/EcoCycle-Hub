@@ -18,18 +18,35 @@ export default function SignUp() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const { show } = useToast();
-  const { signUpDemo } = useApp();
+  const { signUpDemo, apiMode } = useApp();
 
-  const create = (firstName: string) => {
-    signUpDemo(name, email);
+  const create = async (firstName: string) => {
+    setBusy(true);
+    const res = await signUpDemo(name.trim(), email.trim(), phone, password);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error ?? 'Could not create your account. Please try again.');
+      return;
+    }
     show(`Account created — welcome, ${firstName}!`);
     navigate('/dashboard');
   };
 
+  const social = (provider: string) => {
+    if (apiMode) {
+      show(`${provider} sign-up isn’t connected yet — fill the form and create a free account.`);
+      return;
+    }
+    setError('');
+    void create(name.trim().split(' ')[0] || 'there');
+  };
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setError('');
     setNotice('');
     const cleanName = name.trim();
@@ -53,7 +70,7 @@ export default function SignUp() {
       setError('Please accept the Terms of Service to continue.');
       return;
     }
-    create(cleanName.split(' ')[0]);
+    void create(cleanName.split(' ')[0]);
   };
 
   return (
@@ -156,11 +173,15 @@ export default function SignUp() {
           </p>
         )}
 
-        <button type="submit" className="btn btn-primary btn-block">
-          Create Free Account
+        <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+          {busy ? 'Creating account…' : 'Create Free Account'}
         </button>
 
-        <p className="demo-hint">Demo mode — your details are pre-filled, no real account is created.</p>
+        <p className="demo-hint">
+          {apiMode
+            ? 'Connected to the EcoCycle API — this creates a real account in the local database.'
+            : 'Demo mode — your details are pre-filled, no real account is created.'}
+        </p>
 
         <ol className="auth-next" aria-label="What happens next">
           {nextSteps.map((step, i) => (
@@ -176,25 +197,13 @@ export default function SignUp() {
         </div>
 
         <div className="auth-socials">
-          <button
-            type="button"
-            className="social-btn"
-            onClick={() => create(name.trim().split(' ')[0] || 'there')}
-          >
+          <button type="button" className="social-btn" onClick={() => social('Google')}>
             <span className="g-mark">G</span> Google
           </button>
-          <button
-            type="button"
-            className="social-btn"
-            onClick={() => create(name.trim().split(' ')[0] || 'there')}
-          >
+          <button type="button" className="social-btn" onClick={() => social('Apple')}>
             <span aria-hidden="true">🍎</span> Apple
           </button>
-          <button
-            type="button"
-            className="social-btn"
-            onClick={() => create(name.trim().split(' ')[0] || 'there')}
-          >
+          <button type="button" className="social-btn" onClick={() => social('Phone')}>
             <Phone size={16} /> Phone
           </button>
         </div>

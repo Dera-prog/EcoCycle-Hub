@@ -13,18 +13,35 @@ export default function SignIn() {
   const [remember, setRemember] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const { show } = useToast();
-  const { signInDemo } = useApp();
+  const { signInDemo, apiMode } = useApp();
 
-  const enter = (message: string) => {
-    signInDemo();
+  const enter = async (message: string) => {
+    setBusy(true);
+    const res = await signInDemo(email, password);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error ?? 'Could not sign in. Please try again.');
+      return;
+    }
     show(message);
     navigate('/dashboard');
   };
 
+  const social = (provider: string) => {
+    if (apiMode) {
+      show(`${provider} sign-in isn’t connected yet — use your email and password.`);
+      return;
+    }
+    setError('');
+    void enter(`Signed in with ${provider}.`);
+  };
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setError('');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setError('Enter a valid email address.');
@@ -34,7 +51,7 @@ export default function SignIn() {
       setError('Password must be at least 6 characters.');
       return;
     }
-    enter('Welcome back, Amaka!');
+    void enter('Welcome back!');
   };
 
   return (
@@ -102,12 +119,14 @@ export default function SignIn() {
           </p>
         )}
 
-        <button type="submit" className="btn btn-primary btn-block">
-          Sign In
+        <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+          {busy ? 'Signing in…' : 'Sign In'}
         </button>
 
         <p className="demo-hint">
-          Demo account is pre-filled — press Sign In to explore with activity already on it.
+          {apiMode
+            ? 'Connected to the EcoCycle API — the seeded demo account is pre-filled.'
+            : 'Demo account is pre-filled — press Sign In to explore with activity already on it.'}
         </p>
 
         <div className="auth-divider">
@@ -115,13 +134,13 @@ export default function SignIn() {
         </div>
 
         <div className="auth-socials">
-          <button type="button" className="social-btn" onClick={() => enter('Signed in with Google.')}>
+          <button type="button" className="social-btn" onClick={() => social('Google')}>
             <span className="g-mark">G</span> Google
           </button>
-          <button type="button" className="social-btn" onClick={() => enter('Signed in with Apple.')}>
+          <button type="button" className="social-btn" onClick={() => social('Apple')}>
             <span aria-hidden="true">🍎</span> Apple
           </button>
-          <button type="button" className="social-btn" onClick={() => enter('Signed in with your phone number.')}>
+          <button type="button" className="social-btn" onClick={() => social('Phone')}>
             <Phone size={16} /> Phone
           </button>
         </div>

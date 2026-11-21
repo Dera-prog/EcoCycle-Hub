@@ -54,6 +54,7 @@ export default function Schedule() {
   const [time, setTime] = useState('');
   const [address, setAddress] = useState(addresses[0]);
   const [success, setSuccess] = useState<Collection | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const active = category ? categoryMap[category] : null;
   const numWeight = Number(weight) || 0;
@@ -85,11 +86,13 @@ export default function Schedule() {
     setTime('');
     setAddress(addresses[0]);
     setSuccess(null);
+    setBusy(false);
   };
 
-  const confirm = () => {
-    if (!category) return;
-    const created = addPickup({
+  const confirm = async () => {
+    if (!category || busy) return;
+    setBusy(true);
+    const created = await addPickup({
       category,
       weight: numWeight,
       dateLabel: dateShort,
@@ -97,6 +100,11 @@ export default function Schedule() {
       address,
       earning,
     });
+    setBusy(false);
+    if (!created) {
+      show('Could not schedule the pickup — please try again.');
+      return;
+    }
     setSuccess(created);
     setStep(5);
     show('Pickup confirmed — your agent is assigned.');
@@ -428,8 +436,13 @@ export default function Schedule() {
               {step === 1 ? 'Continue to Weight' : step === 2 ? 'Continue' : 'Review'} →
             </button>
           ) : (
-            <button type="button" className="btn btn-primary" onClick={confirm} disabled={!numWeight || !time}>
-              <Check size={17} /> Confirm Pickup
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void confirm()}
+              disabled={!numWeight || !time || busy}
+            >
+              <Check size={17} /> {busy ? 'Confirming…' : 'Confirm Pickup'}
             </button>
           )}
         </footer>
