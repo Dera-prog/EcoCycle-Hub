@@ -1,0 +1,9 @@
+.vercel
+node_modules
+dist
+*.tsbuildinfo
+.qa
+.figma
+.secrets
+*.log
+.DS_Store
