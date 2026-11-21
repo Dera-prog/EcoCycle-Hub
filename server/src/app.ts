@@ -5,6 +5,8 @@ import rateLimit from '@fastify/rate-limit';
 import { config } from './config.js';
 import { initMonitoring, captureError } from './monitoring.js';
 import authRoutes from './routes/auth.js';
+import otpRoutes from './routes/otp.js';
+import opsRoutes from './routes/ops.js';
 import collectionRoutes from './routes/collections.js';
 import walletRoutes from './routes/wallet.js';
 import miscRoutes from './routes/misc.js';
@@ -29,6 +31,8 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(miscRoutes);
   await app.register(authRoutes);
+  await app.register(otpRoutes);
+  await app.register(opsRoutes);
   await app.register(collectionRoutes);
   await app.register(walletRoutes);
 

@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { pathToFileURL } from 'node:url';
 import { pool } from './db.js';
 
 const SEED_COLLECTIONS = [
@@ -32,12 +33,23 @@ export async function seedDemoData(): Promise<void> {
     await client.query('BEGIN');
     const passwordHash = await bcrypt.hash('demo1234', 10);
     const user = await client.query<{ id: string }>(
-      `INSERT INTO users (name, email, phone, password_hash, persona, tier, balance, pending, total_earned, total_recycled, month_kg)
-       VALUES ($1, $2, $3, $4, 'returning', 'Gold Recycler', 48200, 2640, 48200, 1240, 89)
+      `INSERT INTO users (name, email, phone, password_hash, role, persona, tier, phone_verified_at, balance, pending, total_earned, total_recycled, month_kg)
+       VALUES ($1, $2, $3, $4, 'customer', 'returning', 'Gold Recycler', now(), 48200, 2640, 48200, 1240, 89)
        RETURNING id`,
-      ['Amaka Obi', 'amaka@gmail.com', '0803 555 0192', passwordHash],
+      ['Amaka Obi', 'amaka@gmail.com', '+2348035550192', passwordHash],
     );
     const userId = user.rows[0].id;
+
+    for (const [name, email, phone, role] of [
+      ['Grace Adeyemi', 'agent@ecocycle.ng', '+2348030000001', 'agent'],
+      ['Tunde Balogun', 'admin@ecocycle.ng', '+2348030000002', 'admin'],
+    ] as const) {
+      await client.query(
+        `INSERT INTO users (name, email, phone, password_hash, role, persona, tier, phone_verified_at)
+         VALUES ($1, $2, $3, $4, $5, 'new', 'New Recycler', now())`,
+        [name, email, phone, passwordHash, role],
+      );
+    }
 
     await client.query('INSERT INTO bank_accounts (user_id, bank_name, last4) VALUES ($1, $2, $3)', [
       userId,
@@ -77,4 +89,18 @@ export async function seedDemoData(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Refusing to seed a production database.');
+    process.exit(1);
+  }
+  seedDemoData()
+    .then(() => pool.end())
+    .then(() => console.log('Seed complete'))
+    .catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
 }

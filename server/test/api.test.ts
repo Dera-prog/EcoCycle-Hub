@@ -59,25 +59,33 @@ test('sign-in rejects a wrong password and accepts the seeded account', async ()
   const ok = await signIn('amaka@gmail.com', 'demo1234');
   assert.equal(ok.response.statusCode, 200);
   assert.equal(typeof ok.body.token, 'string');
-  assert.equal((ok.body.state as { balance: number }).balance, 48200);
+  const state = ok.body.state as { balance: number; user: { role: string } };
+  assert.equal(state.balance, 48200);
+  assert.equal(state.user.role, 'customer');
 });
 
 test('sign-up creates an empty account and rejects duplicates', async () => {
   const created = await app.inject({
     method: 'POST',
     url: '/api/auth/signup',
-    payload: { name: 'Test Recycler', email: 'test@ecocycle.ng', phone: '08035550192', password: 'secret123' },
+    payload: { name: 'Test Recycler', email: 'test@ecocycle.ng', phone: '0803 555 0193', password: 'secret123' },
   });
   assert.equal(created.statusCode, 200);
-  const state = json(created).state as { balance: number; user: { email: string }; collections: unknown[] };
+  const state = json(created).state as {
+    balance: number;
+    user: { email: string; phone: string; role: string };
+    collections: unknown[];
+  };
   assert.equal(state.balance, 0);
   assert.equal(state.user.email, 'test@ecocycle.ng');
+  assert.equal(state.user.phone, '+2348035550193');
+  assert.equal(state.user.role, 'customer');
   assert.equal(state.collections.length, 0);
 
   const duplicate = await app.inject({
     method: 'POST',
     url: '/api/auth/signup',
-    payload: { name: 'Test Recycler', email: 'test@ecocycle.ng', phone: '08035550192', password: 'secret123' },
+    payload: { name: 'Test Recycler', email: 'test@ecocycle.ng', phone: '0803 555 0193', password: 'secret123' },
   });
   assert.equal(duplicate.statusCode, 409);
 });
@@ -155,4 +163,89 @@ test('demo reset clears activity for the signed-in account', async () => {
   assert.equal(state.collections.length, 0);
   assert.equal(state.monthKg, 0);
   assert.equal(state.balance, 0);
+});
+
+async function requestCode(phone: string): Promise<string> {
+  const response = await app.inject({ method: 'POST', url: '/api/auth/otp/request', payload: { phone } });
+  assert.equal(response.statusCode, 200);
+  const code = json(response).devCode;
+  assert.match(String(code), /^\d{6}$/);
+  return String(code);
+}
+
+test('phone OTP signs in a known number and codes are single-use', async () => {
+  const phone = '+234 803 555 0192';
+  const code = await requestCode(phone);
+
+  const verified = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code } });
+  assert.equal(verified.statusCode, 200);
+  const body = json(verified) as { token: string; state: { balance: number; user: { phone: string } } };
+  assert.equal(typeof body.token, 'string');
+  assert.equal(body.state.balance, 43200);
+  assert.equal(body.state.user.phone, '+2348035550192');
+
+  const reused = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code } });
+  assert.equal(reused.statusCode, 400);
+});
+
+test('phone OTP creates a customer when the number is new', async () => {
+  const phone = '0803 555 0100';
+  const code = await requestCode(phone);
+
+  const needsName = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code } });
+  assert.equal(needsName.statusCode, 400);
+  assert.equal((json(needsName) as { needsName?: boolean }).needsName, true);
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/api/auth/otp/verify',
+    payload: { phone, code, name: 'Ngozi Eze' },
+  });
+  assert.equal(created.statusCode, 200);
+  const state = json(created).state as {
+    balance: number;
+    user: { name: string; phone: string; email: string; role: string };
+  };
+  assert.equal(state.balance, 0);
+  assert.equal(state.user.name, 'Ngozi Eze');
+  assert.equal(state.user.phone, '+2348035550100');
+  assert.equal(state.user.email, '');
+  assert.equal(state.user.role, 'customer');
+});
+
+test('phone OTP locks out after repeated wrong codes', async () => {
+  const phone = '0803 555 0101';
+  const code = await requestCode(phone);
+  const wrong = code === '000000' ? '111111' : '000000';
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code: wrong } });
+    assert.equal(response.statusCode, 400);
+  }
+
+  const locked = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code } });
+  assert.equal(locked.statusCode, 429);
+});
+
+test('the ops user list is restricted to admins', async () => {
+  const admin = await signIn('admin@ecocycle.ng', 'demo1234');
+  const listed = await app.inject({
+    method: 'GET',
+    url: '/api/ops/users',
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  assert.equal(listed.statusCode, 200);
+  const users = json(listed).users as Array<{ role: string }>;
+  assert.ok(users.some((u) => u.role === 'admin'));
+
+  const customer = await signIn('amaka@gmail.com', 'demo1234');
+  const denied = await app.inject({
+    method: 'GET',
+    url: '/api/ops/users',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  assert.equal(denied.statusCode, 403);
+
+  const anonymous = await app.inject({ method: 'GET', url: '/api/ops/users' });
+  assert.equal(anonymous.statusCode, 401);
 });

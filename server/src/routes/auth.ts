@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import bcrypt from 'bcryptjs';
 import { findUserByEmail, snapshotFor, pool } from '../db.js';
 import { signToken, requireAuth } from '../auth.js';
+import { normalizePhone } from '../phone.js';
 
 interface SignUpBody {
   name?: string;
@@ -26,12 +27,12 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post<{ Body: SignUpBody }>('/api/auth/signup', authRateLimit, async (request, reply) => {
     const name = (request.body.name ?? '').trim();
     const email = (request.body.email ?? '').trim().toLowerCase();
-    const phone = (request.body.phone ?? '').trim();
+    const phone = normalizePhone(request.body.phone ?? '');
     const password = request.body.password ?? '';
 
     if (name.length < 2) return reply.code(400).send({ error: 'Please enter your full name.' });
     if (!EMAIL_RE.test(email)) return reply.code(400).send({ error: 'Enter a valid email address.' });
-    if (phone.replace(/\D/g, '').length < 10) {
+    if (!phone) {
       return reply.code(400).send({ error: 'Enter a valid Nigerian phone number.' });
     }
     if (password.length < 6) {
@@ -61,7 +62,13 @@ export default async function authRoutes(app: FastifyInstance) {
     } catch (error) {
       await client.query('ROLLBACK');
       if (isUniqueViolation(error)) {
-        return reply.code(409).send({ error: 'An account with this email already exists.' });
+        const constraint = (error as { constraint?: string }).constraint;
+        return reply.code(409).send({
+          error:
+            constraint === 'users_phone_key'
+              ? 'An account with this phone number already exists.'
+              : 'An account with this email already exists.',
+        });
       }
       throw error;
     } finally {

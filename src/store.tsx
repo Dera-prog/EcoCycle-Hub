@@ -7,6 +7,8 @@ export type Persona = 'returning' | 'new';
 export interface AppUser {
   name: string;
   email: string;
+  phone?: string;
+  role?: string;
   tier: string;
 }
 
@@ -27,6 +29,13 @@ export interface AppState {
 export interface ActionResult {
   ok: boolean;
   error?: string;
+  needsName?: boolean;
+}
+
+export interface OtpRequestResult {
+  ok: boolean;
+  error?: string;
+  devCode?: string;
 }
 
 interface AppContextValue extends AppState {
@@ -41,6 +50,8 @@ interface AppContextValue extends AppState {
   updateBank: (bank: BankAccount) => Promise<ActionResult>;
   signInDemo: (email?: string, password?: string) => Promise<ActionResult>;
   signUpDemo: (name: string, email: string, phone?: string, password?: string) => Promise<ActionResult>;
+  requestOtp: (phone: string) => Promise<OtpRequestResult>;
+  verifyOtp: (phone: string, code: string, name?: string) => Promise<ActionResult>;
   signOut: () => void;
   resetDemo: () => void;
 }
@@ -100,6 +111,8 @@ interface ApiResult {
     state?: AppState;
     collection?: Collection;
     error?: string;
+    devCode?: string;
+    needsName?: boolean;
   } | null;
   error?: string;
 }
@@ -378,6 +391,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState(emptyState('New Recycler', ''));
   }, [apiMode]);
 
+  const requestOtp = useCallback(async (phone: string): Promise<OtpRequestResult> => {
+    const res = await api('/api/auth/otp/request', { method: 'POST', body: { phone } });
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true, devCode: res.data?.devCode };
+  }, []);
+
+  const verifyOtp = useCallback(async (phone: string, code: string, name?: string): Promise<ActionResult> => {
+    const res = await api('/api/auth/otp/verify', {
+      method: 'POST',
+      body: { phone, code, ...(name ? { name } : {}) },
+    });
+    if (!res.ok) return { ok: false, error: res.error, needsName: res.data?.needsName };
+    if (res.data?.token) localStorage.setItem(TOKEN_KEY, res.data.token);
+    applyState(res);
+    return { ok: true };
+  }, []);
+
   const resetDemo = useCallback(() => {
     if (apiMode) {
       void api('/api/demo/reset', { method: 'POST', body: {} }).then(applyState);
@@ -407,10 +437,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateBank,
       signInDemo,
       signUpDemo,
+      requestOtp,
+      verifyOtp,
       signOut,
       resetDemo,
     }),
-    [state, unreadCount, isFresh, apiMode, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, signOut, resetDemo],
+    [state, unreadCount, isFresh, apiMode, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, requestOtp, verifyOtp, signOut, resetDemo],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

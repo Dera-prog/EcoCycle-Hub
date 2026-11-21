@@ -1480,6 +1480,47 @@ blockquote { margin: 0; }
 }
 .auth-form { padding: 22px 22px 24px; display: grid; gap: 15px; }
 .auth-form .btn-block { margin-top: 2px; }
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 18px 22px 0;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.auth-tab {
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.auth-tab.is-active {
+  background: #fff;
+  color: var(--brand-700);
+  box-shadow: 0 1px 3px rgba(16, 40, 24, 0.14);
+}
+.otp-phone-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.otp-code input {
+  letter-spacing: 0.4em;
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-align: center;
+}
+.otp-hint { text-align: center; font-size: 0.68rem; color: var(--muted); margin-top: -7px; }
 .auth-field-pair { display: grid; gap: 15px; }
 .check-row {
   display: flex;

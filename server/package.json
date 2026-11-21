@@ -10,6 +10,7 @@
     "migrate": "node dist/migrate.js up",
     "migrate:dev": "tsx src/migrate.ts up",
     "migrate:down": "node dist/migrate.js down",
+    "seed:dev": "tsx src/seed.ts",
     "test": "node --import tsx --test test/api.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.test.json"
   },

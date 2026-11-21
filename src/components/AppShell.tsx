@@ -140,7 +140,7 @@ export default function AppShell() {
             <span className="avatar-lg">{initial}</span>
             <div>
               <strong>{user.name}</strong>
-              <span>{user.email}</span>
+              <span>{user.email || user.phone}</span>
               <em>{persona === 'returning' ? '🥇 Gold Recycler' : '🌱 New Recycler'}</em>
             </div>
           </div>

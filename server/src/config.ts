@@ -17,6 +17,13 @@ if (isProduction && seedDemo) {
   throw new Error('SEED_DEMO must not be enabled in production');
 }
 
+const smsProvider = (process.env.SMS_PROVIDER?.trim() || (isProduction ? 'none' : 'console')) as
+  | 'console'
+  | 'none';
+if (smsProvider !== 'console' && smsProvider !== 'none') {
+  throw new Error('SMS_PROVIDER must be "console" or "none"');
+}
+
 export const config = {
   isProduction,
   port: Number(process.env.PORT ?? 4000),
@@ -31,4 +38,11 @@ export const config = {
   logLevel: process.env.LOG_LEVEL ?? (isProduction ? 'info' : 'debug'),
   dbPoolMax: Number(process.env.DB_POOL_MAX ?? 10),
   trustProxy: process.env.TRUST_PROXY !== 'false',
+  smsProvider,
+  smsFrom: process.env.SMS_FROM?.trim() || 'EcoCycle',
+  otp: {
+    ttlSeconds: Number(process.env.OTP_TTL_SECONDS ?? 300),
+    maxAttempts: Number(process.env.OTP_MAX_ATTEMPTS ?? 5),
+    resendSeconds: Number(process.env.OTP_RESEND_SECONDS ?? 60),
+  },
 } as const;

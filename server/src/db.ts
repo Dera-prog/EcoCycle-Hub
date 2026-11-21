@@ -18,9 +18,10 @@ pool.on('error', (error) => {
 export interface UserRow {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
   phone: string;
   password_hash: string;
+  role: 'customer' | 'agent' | 'depot' | 'admin';
   persona: 'returning' | 'new';
   tier: string;
   balance: string;
@@ -41,9 +42,14 @@ export async function findUserById(id: string): Promise<UserRow | null> {
   return rows[0] ?? null;
 }
 
+export async function findUserByPhone(phone: string): Promise<UserRow | null> {
+  const { rows } = await pool.query<UserRow>('SELECT * FROM users WHERE phone = $1', [phone]);
+  return rows[0] ?? null;
+}
+
 export interface Snapshot {
   persona: 'returning' | 'new';
-  user: { name: string; email: string; tier: string };
+  user: { name: string; email: string; phone: string; role: UserRow['role']; tier: string };
   balance: number;
   pending: number;
   totalEarned: number;
@@ -80,7 +86,7 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
 
   return {
     persona: user.persona,
-    user: { name: user.name, email: user.email, tier: user.tier },
+    user: { name: user.name, email: user.email ?? '', phone: user.phone, role: user.role, tier: user.tier },
     balance: Number(user.balance),
     pending: Number(user.pending),
     totalEarned: Number(user.total_earned),

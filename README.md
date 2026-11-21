@@ -111,7 +111,7 @@ VITE_API_URL=http://localhost:4001
 
 Restart `npm run dev` after changing it. Removing the variable — or building without it, as Vercel does — returns the app to localStorage demo mode. If the API is unreachable, the app probes `/api/health` at startup and falls back to demo mode automatically.
 
-Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New accounts start empty.
+Seeded accounts: **amaka@gmail.com / demo1234** (Gold Recycler with history, phone `+234 803 555 0192`), plus staff logins **agent@ecocycle.ng** and **admin@ecocycle.ng** (same password) with the `agent` and `admin` roles. New accounts start empty.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -120,6 +120,8 @@ Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New
 | `GET` | `/api/categories` | waste categories and per-kg rates |
 | `POST` | `/api/auth/signup` | create account, returns JWT + state |
 | `POST` | `/api/auth/signin` | sign in, returns JWT + state |
+| `POST` | `/api/auth/otp/request` | send a 6-digit phone code (rate-limited, 60 s resend) |
+| `POST` | `/api/auth/otp/verify` | verify the code; signs in or creates a customer |
 | `GET` | `/api/me` | current snapshot (auth) |
 | `GET`/`POST` | `/api/collections` | list / schedule a pickup (auth) |
 | `PATCH`/`DELETE` | `/api/collections/:id` | reschedule/cancel (auth) |
@@ -127,8 +129,21 @@ Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New
 | `PUT` | `/api/bank-account` | update payout account (auth) |
 | `POST` | `/api/notifications/read-all` | mark notifications read (auth) |
 | `POST` | `/api/demo/reset` | restore the seeded state (auth) |
+| `GET` | `/api/ops/users` | recent accounts with roles (admin only) |
 
 Every mutation returns the full updated snapshot (`{ state }`), which the frontend swaps in directly.
+
+## Actors and roles
+
+Every account has a `role`: `customer` (default), `agent`, `depot` or `admin`. Roles are stored in `users.role`, exposed in the snapshot as `user.role`, and enforced by `requireRole()` on the server — the ops user list returns `403` to anyone who is not an admin. Accounts created through sign-up or phone OTP are always customers; staff roles are assigned in the database (the demo seed creates one `agent` and one `admin` so the guard can be tested).
+
+Sign-up and phone OTP both normalise numbers to E.164 (`0803 555 0192` → `+2348035550192`), and `users.phone` is unique when set.
+
+## Phone-first sign-in
+
+With the API running, the sign-in and sign-up screens gain an **Email / Phone** switch. Phone sign-in sends a 6-digit code, verifies it, and signs in the matching account; an unknown number asks for a name and creates a customer account. Codes expire after 5 minutes, allow 5 attempts, are single-use, and requests are throttled to 5/minute with a 60-second resend cooldown.
+
+SMS delivery is a stub by design, so no fake provider is wired in. `SMS_PROVIDER=console` (the non-production default) logs the code to the API console and returns it as `devCode` in non-production responses — which is what the UI shows as “Development code”. In production `SMS_PROVIDER` defaults to `none`, and `/api/auth/otp/request` answers `503` with a clear message until a real provider (e.g. Termii, Twilio) is implemented. Email and password sign-in are unaffected.
 
 ## Database migrations
 
@@ -149,7 +164,7 @@ The suite uses Node's built-in test runner against a real PostgreSQL database (n
 ```bash
 cd server
 npm run typecheck                 # tsc --noEmit across src and test
-npm test                          # 7 end-to-end API tests
+npm test                          # 11 end-to-end API tests
 ```
 
 With the Docker stack running, the defaults already point at it. Otherwise set `TEST_ADMIN_URL` (a connection to the `postgres` database, used to create `ecocycle_test`) and `TEST_DATABASE_URL`.
@@ -174,6 +189,11 @@ All configuration is environment-driven and validated at startup (`server/src/co
 | `LOG_LEVEL` | no | `info` | Pino log level (`silent` in tests) |
 | `TRUST_PROXY` | no | `true` | Trust `X-Forwarded-*` from a load balancer (set `false` when serving directly) |
 | `DB_POOL_MAX` | no | `10` | Max Postgres pool connections |
+| `SMS_PROVIDER` | no | `console` dev / `none` prod | `console` logs OTP codes; `none` disables phone sign-in |
+| `SMS_FROM` | no | `EcoCycle` | Sender name shown in OTP messages |
+| `OTP_TTL_SECONDS` | no | `300` | Code lifetime |
+| `OTP_MAX_ATTEMPTS` | no | `5` | Wrong guesses before a code locks |
+| `OTP_RESEND_SECONDS` | no | `60` | Minimum gap between code requests per number |
 
 ### Production hardening
 
@@ -203,6 +223,28 @@ The same image runs on Fly.io or Railway: set the env vars above, run the contai
 
 **CI** — `.github/workflows/ci.yml` runs on every push and pull request: the `web` job builds the frontend, and the `api` job spins up PostgreSQL 16, then runs typecheck, the test suite, and the Docker build. A red CI run blocks the PR from merging.
 
+## Staging
+
+A separate staging database lives beside the dev one in the same Postgres container, so staging data never mixes with development:
+
+```bash
+docker exec 2ed0a2eb-db-1 psql -U ecocycle -d postgres -c 'CREATE DATABASE ecocycle_staging'
+cd server
+export STAGING_URL=postgres://ecocycle:ecocycle@localhost:5436/ecocycle_staging
+DATABASE_URL=$STAGING_URL npm run migrate:dev
+DATABASE_URL=$STAGING_URL npm run seed:dev
+```
+
+Run a second API instance against it on its own port:
+
+```bash
+PORT=4002 DATABASE_URL=$STAGING_URL JWT_SECRET=local-dev-secret-change-me-32chars \
+  SEED_DEMO=true CORS_ORIGIN=http://localhost:5173 npm run dev
+curl http://localhost:4002/api/health
+```
+
+Point a frontend at it with `VITE_API_URL=http://localhost:4002`. Hosted staging uses the same code path: apply the Render Blueprint a second time (or point `DATABASE_URL` at a Neon/Supabase branch) and the container's boot step applies migrations before the API starts.
+
 ## Project structure
 
 ```
@@ -211,7 +253,7 @@ src/
 ├── data.ts              # categories, products, testimonials, plans, seed data
 ├── store.tsx            # app store: localStorage demo or REST API
 ├── styles.css           # design system + all component styles
-├── components/          # AppShell, DashHeader, ExploreMore, UI primitives
+├── components/          # AppShell, DashHeader, ExploreMore, PhoneAuth, UI primitives
 └── pages/               # Home, HowItWorks, Categories, Impact, Products,
                          # Pricing, SignIn, SignUp, Dashboard, Schedule,
                          # Wallet, EcoImpact, TrackAgent
@@ -222,11 +264,13 @@ server/
 ├── src/app.ts           # Fastify instance: plugins, limits, error handling
 ├── src/config.ts        # env parsing + production fail-fast validation
 ├── src/migrate.ts       # node-pg-migrate runner
-├── src/seed.ts          # idempotent demo seed (gated by SEED_DEMO)
+├── src/seed.ts          # idempotent demo seed (also runnable via seed:dev)
 ├── src/monitoring.ts    # optional Sentry init + captureError
+├── src/phone.ts         # Nigerian phone normalisation to E.164
+├── src/sms.ts           # SMS provider stub (console | none)
 ├── src/db.ts            # pool + snapshot queries
-├── src/auth.ts          # JWT sign/verify + auth hook
-└── src/routes/          # auth, collections, wallet, misc
+├── src/auth.ts          # JWT sign/verify, requireAuth, requireRole
+└── src/routes/          # auth, otp, ops, collections, wallet, misc
 .github/workflows/ci.yml # typecheck + tests + Docker build on every PR
 render.yaml              # Render blueprint: web service + managed Postgres
 docker-compose.yml       # db + api services
