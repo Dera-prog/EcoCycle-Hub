@@ -4,6 +4,31 @@
 
 **Live demo:** https://ecocycle-hub.vercel.app
 
+## Screenshots
+
+**Marketing site**
+
+| Home | Categories |
+|---|---|
+| ![Home page](docs/screenshots/home-desktop.png) | ![Categories page](docs/screenshots/categories-desktop.png) |
+
+**The app**
+
+| Dashboard | Schedule a pickup |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard-desktop.png) | ![Schedule a pickup](docs/screenshots/schedule-desktop.png) |
+
+| Wallet | Live agent tracking |
+|---|---|
+| ![Wallet](docs/screenshots/wallet-desktop.png) | ![Track your agent](docs/screenshots/track-desktop.png) |
+
+**Mobile**
+
+| Home | Dashboard |
+|---|---|
+| <img src="docs/screenshots/home-mobile.png" width="260" alt="Home on mobile" /> | <img src="docs/screenshots/dashboard-mobile.png" width="260" alt="Dashboard on mobile" /> |
+
+
 ---
 
 ## What's inside
