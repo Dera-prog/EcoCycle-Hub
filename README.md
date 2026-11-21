@@ -145,6 +145,35 @@ With the API running, the sign-in and sign-up screens gain an **Email / Phone** 
 
 SMS delivery is a stub by design, so no fake provider is wired in. `SMS_PROVIDER=console` (the non-production default) logs the code to the API console and returns it as `devCode` in non-production responses — which is what the UI shows as “Development code”. In production `SMS_PROVIDER` defaults to `none`, and `/api/auth/otp/request` answers `503` with a clear message until a real provider (e.g. Termii, Twilio) is implemented. Email and password sign-in are unaffected.
 
+## Pickup lifecycle and service areas
+
+Every pickup moves through an explicit state machine:
+
+```
+upcoming ──assign──▶ assigned ──start route──▶ en_route ──arrive──▶ arrived ──confirm weight──▶ completed
+    │                    │
+    └──────cancel────────┴──────cancel────────▶ cancelled
+```
+
+`upcoming` and `assigned` pickups can be cancelled or rescheduled by the customer; once the agent is en route the pickup is locked. Each transition is validated against the current status (`server/src/lifecycle.ts`), recorded in `pickup_events` (from/to, actor, role, note), and sends the customer an in-app notification plus an SMS.
+
+**Who does what**
+
+| Actor | Endpoint | Purpose |
+| --- | --- | --- |
+| Customer | `POST /api/collections` | Book a pickup — price comes from the service area |
+| Customer | `PATCH /api/collections/:id` / `DELETE` | Reschedule or soft-cancel (kept in history) |
+| Admin | `GET /api/ops/pickups`, `GET /api/ops/agents` | Ops board and agent roster |
+| Admin | `POST /api/ops/pickups/:id/assign` | Assign a field agent (stamps `agent_id`) |
+| Agent | `POST /api/ops/pickups/:id/transition` | `en_route` → `arrived` → `complete` (with weight), or `release` |
+| Any | `GET /api/service-areas` | Active areas with per-category ₦/kg rates |
+
+The customer's booking is an **estimate**. When the agent completes the pickup they enter the confirmed weight on the scale; the server prices it at the area rate (`confirmed_weight × rate`), credits the customer's pending balance, writes a `Pending` payment row, and texts the result. Only the assigned agent (or an admin) can advance their own pickup — another agent gets `403`, and out-of-order moves get `409`.
+
+**Service-area pricing.** `service_areas` holds three launch areas (Okota & Surulere, Lekki & Victoria Island, Abuja Central) with per-category rates in `service_area_rates`. Mainland uses the base category rate, the island is ~15% higher, Abuja ~10%. Existing collections are backfilled from their address, and each collection stores the `area` and `rate` used at booking so later price changes never rewrite history.
+
+**Ops console.** When signed in as `agent@ecocycle.ng` or `admin@ecocycle.ng` with the API running, an **Ops** tab appears in the dashboard nav. Admins see every active pickup and can assign agents; agents see their own queue with the next allowed action, including the confirm-weight input on arrival. Customers never see the tab. Demo mode (no API) has no ops console.
+
 ## Database migrations
 
 The schema is versioned with [`node-pg-migrate`](https://salsita.github.io/node-pg-migrate/). SQL files live in `server/migrations/` and are applied in filename order; the container runs them automatically before the API starts.
@@ -155,7 +184,7 @@ npm run migrate:dev     # apply pending migrations against DATABASE_URL (tsx, no
 npm run migrate:down    # roll back the most recent migration
 ```
 
-To add a migration, create `server/migrations/0002_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
+To add a migration, create `server/migrations/0004_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
 
 ## API tests
 
@@ -164,7 +193,7 @@ The suite uses Node's built-in test runner against a real PostgreSQL database (n
 ```bash
 cd server
 npm run typecheck                 # tsc --noEmit across src and test
-npm test                          # 11 end-to-end API tests
+npm test                          # 14 end-to-end API tests
 ```
 
 With the Docker stack running, the defaults already point at it. Otherwise set `TEST_ADMIN_URL` (a connection to the `postgres` database, used to create `ecocycle_test`) and `TEST_DATABASE_URL`.
@@ -256,7 +285,7 @@ src/
 ├── components/          # AppShell, DashHeader, ExploreMore, PhoneAuth, UI primitives
 └── pages/               # Home, HowItWorks, Categories, Impact, Products,
                          # Pricing, SignIn, SignUp, Dashboard, Schedule,
-                         # Wallet, EcoImpact, TrackAgent
+                         # Wallet, EcoImpact, TrackAgent, Ops
 server/
 ├── migrations/          # versioned SQL migrations (node-pg-migrate)
 ├── test/api.test.ts     # end-to-end API tests on a real Postgres
@@ -267,6 +296,8 @@ server/
 ├── src/seed.ts          # idempotent demo seed (also runnable via seed:dev)
 ├── src/monitoring.ts    # optional Sentry init + captureError
 ├── src/phone.ts         # Nigerian phone normalisation to E.164
+├── src/lifecycle.ts     # pickup status machine + allowed transitions
+├── src/notify.ts        # in-app notification + SMS fan-out
 ├── src/sms.ts           # SMS provider stub (console | none)
 ├── src/db.ts            # pool + snapshot queries
 ├── src/auth.ts          # JWT sign/verify, requireAuth, requireRole

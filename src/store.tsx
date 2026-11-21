@@ -1,6 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { categoryMap, seedCollections, seedNotifications, seedPayments } from './data';
-import type { BankAccount, Collection, Notification, Payment, PickupInput } from './types';
+import type {
+  BankAccount,
+  Collection,
+  Notification,
+  OpsPickup,
+  Payment,
+  PickupInput,
+  ServiceArea,
+} from './types';
 
 export type Persona = 'returning' | 'new';
 
@@ -38,10 +46,20 @@ export interface OtpRequestResult {
   devCode?: string;
 }
 
+export interface OpsBoard {
+  pickups: OpsPickup[];
+  agents: Array<{ id: string; name: string; phone: string }>;
+}
+
 interface AppContextValue extends AppState {
   unreadCount: number;
   isFresh: boolean;
   apiMode: boolean;
+  serviceAreas: ServiceArea[];
+  refreshState: () => Promise<void>;
+  loadOps: () => Promise<{ ok: boolean; board?: OpsBoard; error?: string }>;
+  assignPickup: (id: string, agentId: string) => Promise<ActionResult>;
+  movePickup: (id: string, action: string, weight?: number) => Promise<ActionResult>;
   addPickup: (input: PickupInput) => Promise<Collection | null>;
   cancelCollection: (id: string) => void;
   rescheduleCollection: (id: string, dateLabel: string, time: string) => void;
@@ -113,6 +131,10 @@ interface ApiResult {
     error?: string;
     devCode?: string;
     needsName?: boolean;
+    areas?: ServiceArea[];
+    pickups?: OpsPickup[];
+    agents?: Array<{ id: string; name: string; phone: string }>;
+    pickup?: OpsPickup;
   } | null;
   error?: string;
 }
@@ -151,6 +173,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const [apiMode, setApiMode] = useState(false);
   const [probed, setProbed] = useState(!API_URL);
+  const [serviceAreas, setServiceAreas] = useState<ServiceArea[]>([]);
 
   useEffect(() => {
     if (!API_URL) return;
@@ -165,6 +188,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setApiMode(true);
       setProbed(true);
+      const areas = await api('/api/service-areas');
+      if (!cancelled && areas.ok) setServiceAreas(areas.data?.areas ?? []);
       if (!localStorage.getItem(TOKEN_KEY)) return;
       const me = await api('/api/me');
       if (cancelled) return;
@@ -192,6 +217,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (result.data?.state) setState(result.data.state);
   };
 
+  const refreshState = useCallback(async () => {
+    if (!apiMode) return;
+    const me = await api('/api/me');
+    if (me.ok && me.data?.state) setState(me.data.state);
+  }, [apiMode]);
+
+  const loadOps = useCallback(async (): Promise<{ ok: boolean; board?: OpsBoard; error?: string }> => {
+    if (!apiMode) return { ok: false, error: 'The ops console needs the live API.' };
+    const pickups = await api('/api/ops/pickups');
+    if (!pickups.ok) return { ok: false, error: pickups.error };
+    let agents: OpsBoard['agents'] = [];
+    if (state.user.role === 'admin') {
+      const res = await api('/api/ops/agents');
+      if (res.ok) agents = res.data?.agents ?? [];
+    }
+    return { ok: true, board: { pickups: pickups.data?.pickups ?? [], agents } };
+  }, [apiMode, state.user.role]);
+
+  const assignPickup = useCallback(async (id: string, agentId: string): Promise<ActionResult> => {
+    const res = await api(`/api/ops/pickups/${id}/assign`, { method: 'POST', body: { agentId } });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
+  }, []);
+
+  const movePickup = useCallback(
+    async (id: string, action: string, weight?: number): Promise<ActionResult> => {
+      const res = await api(`/api/ops/pickups/${id}/transition`, {
+        method: 'POST',
+        body: { action, ...(weight !== undefined ? { weight } : {}) },
+      });
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    },
+    [],
+  );
+
   const addPickup = useCallback(
     async (input: PickupInput): Promise<Collection | null> => {
       if (apiMode) {
@@ -203,6 +262,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             dateLabel: input.dateLabel,
             time: input.time,
             address: input.address,
+            ...(input.area ? { area: input.area } : {}),
           },
         });
         if (!res.ok) return null;
@@ -429,6 +489,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unreadCount,
       isFresh,
       apiMode,
+      serviceAreas,
+      refreshState,
+      loadOps,
+      assignPickup,
+      movePickup,
       addPickup,
       cancelCollection,
       rescheduleCollection,
@@ -442,7 +507,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signOut,
       resetDemo,
     }),
-    [state, unreadCount, isFresh, apiMode, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, requestOtp, verifyOtp, signOut, resetDemo],
+    [state, unreadCount, isFresh, apiMode, serviceAreas, refreshState, loadOps, assignPickup, movePickup, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, requestOtp, verifyOtp, signOut, resetDemo],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

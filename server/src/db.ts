@@ -68,8 +68,13 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
   const [bank, collections, notifications, payments] = await Promise.all([
     pool.query('SELECT bank_name, last4 FROM bank_accounts WHERE user_id = $1', [userId]),
     pool.query(
-      `SELECT id, category, company, date_label, time, weight, address, status, earning, pickup_id
-       FROM collections WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT c.id, c.category, c.company, c.date_label, c.time, c.weight, c.confirmed_weight,
+              c.address, c.status, c.earning, c.pickup_id, c.area, c.rate, c.cancelled_at,
+              sa.name AS area_name, ag.name AS agent_name, ag.phone AS agent_phone
+       FROM collections c
+       LEFT JOIN service_areas sa ON sa.key = c.area
+       LEFT JOIN users ag ON ag.id = c.agent_id
+       WHERE c.user_id = $1 ORDER BY c.created_at DESC`,
       [userId],
     ),
     pool.query(
@@ -103,6 +108,12 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
       status: r.status,
       ...(r.earning !== null ? { earning: r.earning } : {}),
       ...(r.pickup_id ? { pickupId: r.pickup_id } : {}),
+      ...(r.area ? { area: r.area } : {}),
+      ...(r.area_name ? { areaName: r.area_name } : {}),
+      ...(r.rate !== null ? { rate: Number(r.rate) } : {}),
+      ...(r.confirmed_weight !== null ? { confirmedWeight: Number(r.confirmed_weight) } : {}),
+      ...(r.agent_name ? { agent: { name: r.agent_name, phone: r.agent_phone } } : {}),
+      ...(r.cancelled_at ? { cancelledAt: r.cancelled_at } : {}),
     })),
     notifications: notifications.rows.map((r) => ({
       id: r.id,

@@ -25,6 +25,18 @@ import type { Collection } from '../types';
 const filters = ['All', 'Upcoming', 'Completed'] as const;
 type Filter = (typeof filters)[number];
 
+const activeStatuses: Collection['status'][] = ['upcoming', 'assigned', 'en_route', 'arrived'];
+const isActive = (c: Collection) => activeStatuses.includes(c.status);
+
+const statusLabels: Record<Collection['status'], string> = {
+  upcoming: 'Upcoming',
+  assigned: 'Agent assigned',
+  en_route: 'En route',
+  arrived: 'Arriving',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+};
+
 const timeSlots = ['8:00 AM', '10:00 AM', '12:00 PM', '2:00 PM', '4:00 PM', '6:00 PM'];
 
 const donutSegments = [
@@ -40,7 +52,7 @@ function shortDate(iso: string) {
 }
 
 export default function Dashboard() {
-  const { collections, cancelCollection, rescheduleCollection, persona, user, isFresh } = useApp();
+  const { collections, cancelCollection, rescheduleCollection, persona, user, isFresh, apiMode } = useApp();
   const [filter, setFilter] = useState<Filter>('All');
   const [reschedule, setReschedule] = useState<Collection | null>(null);
   const [cancel, setCancel] = useState<Collection | null>(null);
@@ -52,7 +64,7 @@ export default function Dashboard() {
   const filtered = useMemo(() => {
     if (filter === 'All') return collections;
     return collections.filter((c) =>
-      filter === 'Upcoming' ? c.status === 'upcoming' : c.status === 'completed',
+      filter === 'Upcoming' ? isActive(c) : c.status === 'completed',
     );
   }, [collections, filter]);
 
@@ -229,8 +241,8 @@ export default function Dashboard() {
     );
   }
 
-  const nextPickup = collections.find((c) => c.status === 'upcoming');
-  const upcomingCount = collections.filter((c) => c.status === 'upcoming').length;
+  const nextPickup = collections.find(isActive);
+  const upcomingCount = collections.filter(isActive).length;
 
   return (
     <DashHeader>
@@ -384,7 +396,10 @@ export default function Dashboard() {
         <div className="collection-list">
           {filtered.map((c) => {
             const cat = categoryMap[c.category];
-            const upcoming = c.status === 'upcoming';
+            const upcoming = isActive(c);
+            const cancelled = c.status === 'cancelled';
+            const schedulable = c.status === 'upcoming' || c.status === 'assigned';
+            const kg = c.confirmedWeight ?? c.weight;
             return (
               <article className={`collection-card ${upcoming ? 'is-upcoming' : ''}`} key={c.id}>
                 <div className="collection-top">
@@ -394,7 +409,9 @@ export default function Dashboard() {
                     <span>{c.company}</span>
                   </div>
                   {upcoming ? (
-                    <span className="badge badge-upcoming">Upcoming</span>
+                    <span className="badge badge-upcoming">{statusLabels[c.status]}</span>
+                  ) : cancelled ? (
+                    <span className="badge badge-cancelled">Cancelled</span>
                   ) : (
                     <strong className="collection-amount">{formatNaira(c.earning ?? 0)}</strong>
                   )}
@@ -405,7 +422,7 @@ export default function Dashboard() {
                     <Calendar size={14} /> {c.dateLabel} at {c.time}
                   </span>
                   <span>
-                    <Scale size={14} /> {c.weight} kg
+                    <Scale size={14} /> {kg} kg{c.confirmedWeight ? ' confirmed' : ''}
                   </span>
                   <span>
                     <MapPin size={14} /> {c.address}
@@ -414,20 +431,28 @@ export default function Dashboard() {
 
                 {upcoming ? (
                   <div className="collection-actions">
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setReschedule(c)}>
-                      Reschedule
-                    </button>
+                    {schedulable && (
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => setReschedule(c)}>
+                        Reschedule
+                      </button>
+                    )}
                     <Link to="/track-agent" className="btn btn-soft btn-sm">
                       <MapPin size={15} /> Track Agent
                     </Link>
-                    <button type="button" className="btn btn-danger-soft btn-sm" onClick={() => setCancel(c)}>
-                      Cancel
-                    </button>
+                    {schedulable && (
+                      <button type="button" className="btn btn-danger-soft btn-sm" onClick={() => setCancel(c)}>
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                ) : cancelled ? (
+                  <div className="collection-foot">
+                    <span className="muted">This pickup was cancelled.</span>
                   </div>
                 ) : (
                   <div className="collection-foot">
                     <span className="paid">
-                      <CheckCircle2 size={15} /> Verified &amp; paid
+                      <CheckCircle2 size={15} /> {apiMode ? 'Verified · payout pending' : 'Verified & paid'}
                     </span>
                     <button type="button" className="link-btn" onClick={() => openReceipt(c)}>
                       View receipt

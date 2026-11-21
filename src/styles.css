@@ -236,6 +236,7 @@ blockquote { margin: 0; }
 .badge-upcoming { background: var(--brand-600); color: #fff; }
 .badge-paid { background: var(--brand-100); color: var(--brand-700); }
 .badge-pending { background: #fff3e0; color: var(--amber); }
+.badge-cancelled { background: var(--surface-2); color: var(--muted); }
 
 .stars { display: inline-flex; gap: 3px; }
 
@@ -3173,4 +3174,67 @@ blockquote { margin: 0; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ============================================================
+   Ops console
+   ============================================================ */
+.ops-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ops-section { margin-top: 22px; display: grid; gap: 12px; }
+.ops-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+}
+.ops-list { display: grid; gap: 10px; }
+.ops-card { padding: 16px; display: grid; gap: 12px; }
+.ops-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ops-card-head div { display: grid; gap: 2px; }
+.ops-card-head strong { font-size: 0.9rem; }
+.ops-card-head span { font-size: 0.72rem; color: var(--muted); }
+.ops-status {
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ops-status.is-upcoming { background: var(--brand-600); color: #fff; }
+.ops-status.is-assigned { background: var(--brand-100); color: var(--brand-700); }
+.ops-status.is-en_route,
+.ops-status.is-arrived { background: #e3f2fd; color: #1565c0; }
+.ops-status.is-completed { background: var(--brand-100); color: var(--brand-700); }
+.ops-status.is-cancelled { background: #fff5f5; color: var(--danger); }
+.ops-meta { display: grid; gap: 6px; font-size: 0.75rem; color: var(--muted); }
+.ops-meta span { display: flex; align-items: center; gap: 6px; }
+.ops-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ops-actions select,
+.ops-actions input {
+  height: 38px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+  background: #fff;
+  min-width: 0;
+}
+.ops-actions input { width: 110px; }
+.ops-earn { font-size: 0.76rem; color: var(--brand-700); font-weight: 600; }
+
+@media (min-width: 900px) {
+  .ops-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

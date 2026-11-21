@@ -5,6 +5,7 @@ import {
   Bell,
   BellOff,
   CalendarDays,
+  ClipboardList,
   LayoutDashboard,
   Leaf,
   LifeBuoy,
@@ -24,6 +25,8 @@ const appNav = [
   { to: '/dashboard/impact', label: 'Eco Impact', icon: Leaf },
 ];
 
+const opsNav = { to: '/ops', label: 'Ops', icon: ClipboardList };
+
 export default function AppShell() {
   const { unreadCount, notifications, markAllRead, user, persona, signOut } = useApp();
   const [panel, setPanel] = useState<'notifications' | 'profile' | null>(null);
@@ -31,6 +34,8 @@ export default function AppShell() {
   const navigate = useNavigate();
   const { show } = useToast();
   const initial = user.name.trim().charAt(0).toUpperCase() || 'E';
+  const navItems =
+    user.role === 'agent' || user.role === 'admin' ? [...appNav, opsNav] : appNav;
 
   useEffect(() => {
     setPanel(null);
@@ -55,7 +60,7 @@ export default function AppShell() {
           </Link>
 
           <nav className="app-nav" aria-label="Dashboard">
-            {appNav.map(({ to, label, icon: Icon }) => (
+            {navItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -183,7 +188,7 @@ export default function AppShell() {
       </main>
 
       <nav className="bottom-nav" aria-label="Bottom navigation">
-        {appNav.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

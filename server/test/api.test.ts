@@ -34,13 +34,21 @@ after(async () => {
 
 const json = (response: { body: string }) => JSON.parse(response.body) as Record<string, unknown>;
 
+// Tokens are reused so the auth rate limit is not tripped by repeated sign-ins.
+const tokenCache = new Map<string, { response: Awaited<ReturnType<typeof app.inject>>; body: Record<string, unknown> }>();
+
 async function signIn(email: string, password: string) {
+  const key = `${email}:${password}`;
+  const cached = tokenCache.get(key);
+  if (cached) return cached;
   const response = await app.inject({
     method: 'POST',
     url: '/api/auth/signin',
     payload: { email, password },
   });
-  return { response, body: json(response) };
+  const result = { response, body: json(response) };
+  if (response.statusCode === 200) tokenCache.set(key, result);
+  return result;
 }
 
 test('health and liveness report the database state', async () => {
@@ -225,6 +233,207 @@ test('phone OTP locks out after repeated wrong codes', async () => {
 
   const locked = await app.inject({ method: 'POST', url: '/api/auth/otp/verify', payload: { phone, code } });
   assert.equal(locked.statusCode, 429);
+});
+
+test('service areas price pickups by area', async () => {
+  const areas = await app.inject({ method: 'GET', url: '/api/service-areas' });
+  assert.equal(areas.statusCode, 200);
+  const list = json(areas).areas as Array<{ key: string; rates: Record<string, number> }>;
+  const mainland = list.find((a) => a.key === 'lagos-mainland');
+  const island = list.find((a) => a.key === 'lagos-island');
+  assert.equal(mainland?.rates.plastic, 80);
+  assert.equal(island?.rates.plastic, 90);
+
+  const { body } = await signIn('test@ecocycle.ng', 'secret123');
+  const booked = await app.inject({
+    method: 'POST',
+    url: '/api/collections',
+    headers: { authorization: `Bearer ${body.token}` },
+    payload: {
+      category: 'plastic',
+      weight: 4,
+      dateLabel: 'Today',
+      time: '12:00 PM',
+      address: '18 Admiralty Way, Lekki',
+      area: 'lagos-island',
+    },
+  });
+  assert.equal(booked.statusCode, 201);
+  const collection = (json(booked) as { collection: { earning: number; rate: number; area: string } }).collection;
+  assert.equal(collection.rate, 90);
+  assert.equal(collection.earning, 360);
+  assert.equal(collection.area, 'lagos-island');
+
+  const unknown = await app.inject({
+    method: 'POST',
+    url: '/api/collections',
+    headers: { authorization: `Bearer ${body.token}` },
+    payload: { category: 'plastic', weight: 1, dateLabel: 'Today', time: '12:00 PM', area: 'mars' },
+  });
+  assert.equal(unknown.statusCode, 400);
+});
+
+test('only the assigned agent can progress a pickup, and the agent confirms the weight', async () => {
+  const bcrypt = (await import('bcryptjs')).default;
+  const otherAgent = await pool.query<{ id: string }>(
+    `INSERT INTO users (name, email, phone, password_hash, role)
+     VALUES ('Nia Bello', 'nia@ecocycle.ng', '+2348030000009', $1, 'agent') RETURNING id`,
+    [await bcrypt.hash('secret123', 4)],
+  );
+  assert.ok(otherAgent.rows[0].id);
+
+  const customer = await signIn('test@ecocycle.ng', 'secret123');
+  const booked = await app.inject({
+    method: 'POST',
+    url: '/api/collections',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+    payload: {
+      category: 'metal',
+      weight: 3,
+      dateLabel: 'Tomorrow',
+      time: '10:00 AM',
+      address: '12 Okota Road, Lagos',
+      area: 'lagos-mainland',
+    },
+  });
+  assert.equal(booked.statusCode, 201);
+  const pickupId = (json(booked) as { collection: { id: string } }).collection.id;
+
+  const admin = await signIn('admin@ecocycle.ng', 'demo1234');
+  const agents = await app.inject({
+    method: 'GET',
+    url: '/api/ops/agents',
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  const grace = (json(agents).agents as Array<{ id: string; name: string }>).find(
+    (a) => a.name === 'Grace Adeyemi',
+  );
+  assert.ok(grace);
+
+  const assigned = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/assign`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: { agentId: grace!.id },
+  });
+  assert.equal(assigned.statusCode, 200);
+  const assignedPickup = (json(assigned) as { pickup: { status: string; agent: { name: string } } }).pickup;
+  assert.equal(assignedPickup.status, 'assigned');
+  assert.equal(assignedPickup.agent.name, 'Grace Adeyemi');
+
+  const reassigned = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/assign`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: { agentId: grace!.id },
+  });
+  assert.equal(reassigned.statusCode, 409);
+
+  const nia = await signIn('nia@ecocycle.ng', 'secret123');
+  const forbidden = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${nia.body.token}` },
+    payload: { action: 'en_route' },
+  });
+  assert.equal(forbidden.statusCode, 403);
+
+  const graceSignIn = await signIn('agent@ecocycle.ng', 'demo1234');
+  const skip = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${graceSignIn.body.token}` },
+    payload: { action: 'complete', weight: 3 },
+  });
+  assert.equal(skip.statusCode, 409);
+
+  const enRoute = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${graceSignIn.body.token}` },
+    payload: { action: 'en_route' },
+  });
+  assert.equal(enRoute.statusCode, 200);
+  assert.equal((json(enRoute) as { pickup: { status: string } }).pickup.status, 'en_route');
+
+  const cancelLate = await app.inject({
+    method: 'DELETE',
+    url: `/api/collections/${pickupId}`,
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  assert.equal(cancelLate.statusCode, 409);
+
+  const arrived = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${graceSignIn.body.token}` },
+    payload: { action: 'arrived' },
+  });
+  assert.equal(arrived.statusCode, 200);
+
+  const badWeight = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${graceSignIn.body.token}` },
+    payload: { action: 'complete', weight: 0 },
+  });
+  assert.equal(badWeight.statusCode, 400);
+
+  const completed = await app.inject({
+    method: 'POST',
+    url: `/api/ops/pickups/${pickupId}/transition`,
+    headers: { authorization: `Bearer ${graceSignIn.body.token}` },
+    payload: { action: 'complete', weight: 2.7 },
+  });
+  assert.equal(completed.statusCode, 200);
+  const done = (json(completed) as {
+    pickup: { status: string; confirmedWeight: number; earning: number };
+  }).pickup;
+  assert.equal(done.status, 'completed');
+  assert.equal(done.confirmedWeight, 2.7);
+  assert.equal(done.earning, 324);
+
+  const me = await app.inject({
+    method: 'GET',
+    url: '/api/me',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  const state = json(me).state as {
+    pending: number;
+    collections: Array<{ id: string; status: string }>;
+    payments: Array<{ amount: number; status: string }>;
+  };
+  assert.equal(state.pending, 324);
+  assert.equal(state.collections.find((c) => c.id === pickupId)?.status, 'completed');
+  assert.equal(state.payments[0].amount, 324);
+  assert.equal(state.payments[0].status, 'Pending');
+});
+
+test('customer cancellation is a soft cancel and closes the pickup', async () => {
+  const customer = await signIn('test@ecocycle.ng', 'secret123');
+  const booked = await app.inject({
+    method: 'POST',
+    url: '/api/collections',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+    payload: { category: 'paper', weight: 2, dateLabel: 'Today', time: '4:00 PM', area: 'lagos-mainland' },
+  });
+  const pickupId = (json(booked) as { collection: { id: string } }).collection.id;
+
+  const cancelled = await app.inject({
+    method: 'DELETE',
+    url: `/api/collections/${pickupId}`,
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  assert.equal(cancelled.statusCode, 200);
+  const state = json(cancelled).state as { collections: Array<{ id: string; status: string }> };
+  assert.equal(state.collections.find((c) => c.id === pickupId)?.status, 'cancelled');
+
+  const again = await app.inject({
+    method: 'DELETE',
+    url: `/api/collections/${pickupId}`,
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  assert.equal(again.statusCode, 409);
 });
 
 test('the ops user list is restricted to admins', async () => {
