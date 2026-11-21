@@ -26,6 +26,12 @@ services:
         value: https://ecocycle-hub.vercel.app
       - key: SEED_DEMO
         value: "false"
+      - key: PAYMENTS_PROVIDER
+        value: none
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_API
+        value: https://api.paystack.co
       - key: LOG_LEVEL
         value: info
       - key: SENTRY_DSN

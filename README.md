@@ -298,6 +298,8 @@ All configuration is environment-driven and validated at startup (`server/src/co
 3. Set `CORS_ORIGIN` to your frontend origin(s) and, optionally, `SENTRY_DSN`.
 4. The service builds `server/Dockerfile`, runs migrations on boot, and serves `/api/health` as its health check.
 
+The blueprint starts with `PAYMENTS_PROVIDER=none`, so withdrawals answer `503` until you connect a provider. To send real transfers, set `PAYMENTS_PROVIDER=paystack` and `PAYSTACK_SECRET_KEY`, then add `https://<your-api-host>/api/webhooks/paystack` in the Paystack dashboard (Settings → API Keys & Webhooks). Paystack must also have an activated business before live transfers are allowed.
+
 The blueprint uses free plans so you can stand it up at no cost; Render's free PostgreSQL expires after its trial window, so upgrade the database (and optionally the web service) before running real traffic. For a custom domain, add it in the Render dashboard and point your DNS at the provided target.
 
 The same image runs on Fly.io or Railway: set the env vars above, run the container, and point the platform health check at `/api/live`.
