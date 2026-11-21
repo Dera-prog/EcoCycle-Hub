@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { pool, findUserById, snapshotFor } from '../db.js';
 import { requireAuth } from '../auth.js';
@@ -25,16 +26,24 @@ export default async function walletRoutes(app: FastifyInstance) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [amount, userId]);
+      // Conditional update keeps concurrent withdrawals from overdrawing the balance.
+      const debit = await client.query(
+        'UPDATE users SET balance = balance - $1 WHERE id = $2 AND balance >= $1 RETURNING balance',
+        [amount, userId],
+      );
+      if (debit.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Amount exceeds your available balance.' });
+      }
       await client.query(
         `INSERT INTO payments (id, user_id, company, date_label, weight, amount, status)
          VALUES ($1, $2, 'Bank withdrawal', 'Today', NULL, $3, 'Paid')`,
-        [`pay-${Date.now()}`, userId, amount],
+        [`pay-${randomUUID()}`, userId, amount],
       );
       await client.query(
         `INSERT INTO notifications (id, user_id, kind, title, body, time_label)
          VALUES ($1, $2, 'payment', 'Withdrawal sent', $3, 'Just now')`,
-        [`n-${Date.now()}`, userId, `₦${amount.toLocaleString('en-NG')} is on its way to your bank.`],
+        [`n-${randomUUID()}`, userId, `₦${amount.toLocaleString('en-NG')} is on its way to your bank.`],
       );
       await client.query('COMMIT');
     } catch (err) {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { pool, snapshotFor } from '../db.js';
 import { requireAuth } from '../auth.js';
@@ -39,8 +40,8 @@ export default async function collectionRoutes(app: FastifyInstance) {
     const userId = request.userId!;
     const rate = cat.rows[0].rate as number;
     const earning = Math.round(weight * rate);
-    const id = `pc-${Math.floor(1000 + Math.random() * 9000)}`;
-    const pickupId = `#PC-${id.split('-')[1]}`;
+    const id = randomUUID();
+    const pickupId = `#PC-${id.slice(0, 6).toUpperCase()}`;
     const company = 'GreenCycle Ltd';
 
     const client = await pool.connect();
@@ -57,7 +58,7 @@ export default async function collectionRoutes(app: FastifyInstance) {
       await client.query(
         `INSERT INTO notifications (id, user_id, kind, title, body, time_label)
          VALUES ($1, $2, 'pickup', 'Pickup confirmed!', $3, 'Just now')`,
-        [`n-${Date.now()}`, userId, `${company} arrives ${dateLabel.toLowerCase()} at ${time}.`],
+        [`n-${randomUUID()}`, userId, `${company} arrives ${dateLabel.toLowerCase()} at ${time}.`],
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -98,7 +99,7 @@ export default async function collectionRoutes(app: FastifyInstance) {
         await pool.query(
           `INSERT INTO notifications (id, user_id, kind, title, body, time_label)
            VALUES ($1, $2, 'pickup', 'Pickup rescheduled', $3, 'Just now')`,
-          [`n-${Date.now()}`, userId, `Your ${catName} pickup moved to ${dateLabel} at ${time}.`],
+          [`n-${randomUUID()}`, userId, `Your ${catName} pickup moved to ${dateLabel} at ${time}.`],
         );
       } else {
         return reply.code(400).send({ error: 'Unknown action.' });

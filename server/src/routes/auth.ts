@@ -16,9 +16,14 @@ interface SignInBody {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const authRateLimit = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
+}
 
 export default async function authRoutes(app: FastifyInstance) {
-  app.post<{ Body: SignUpBody }>('/api/auth/signup', async (request, reply) => {
+  app.post<{ Body: SignUpBody }>('/api/auth/signup', authRateLimit, async (request, reply) => {
     const name = (request.body.name ?? '').trim();
     const email = (request.body.email ?? '').trim().toLowerCase();
     const phone = (request.body.phone ?? '').trim();
@@ -37,23 +42,37 @@ export default async function authRoutes(app: FastifyInstance) {
     if (existing) return reply.code(409).send({ error: 'An account with this email already exists.' });
 
     const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, persona, tier)
-       VALUES ($1, $2, $3, $4, 'new', 'New Recycler') RETURNING id`,
-      [name, email, phone, hash],
-    );
-    const userId = rows[0].id as string;
-    await pool.query('INSERT INTO bank_accounts (user_id, bank_name, last4) VALUES ($1, $2, $3)', [
-      userId,
-      'No payout account',
-      '',
-    ]);
+    const client = await pool.connect();
+    let userId: string;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO users (name, email, phone, password_hash, persona, tier)
+         VALUES ($1, $2, $3, $4, 'new', 'New Recycler') RETURNING id`,
+        [name, email, phone, hash],
+      );
+      userId = rows[0].id;
+      await client.query('INSERT INTO bank_accounts (user_id, bank_name, last4) VALUES ($1, $2, $3)', [
+        userId,
+        'No payout account',
+        '',
+      ]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (isUniqueViolation(error)) {
+        return reply.code(409).send({ error: 'An account with this email already exists.' });
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
 
     const state = await snapshotFor(userId);
     return reply.send({ token: signToken(userId), state });
   });
 
-  app.post<{ Body: SignInBody }>('/api/auth/signin', async (request, reply) => {
+  app.post<{ Body: SignInBody }>('/api/auth/signin', authRateLimit, async (request, reply) => {
     const email = (request.body.email ?? '').trim().toLowerCase();
     const password = request.body.password ?? '';
     const user = await findUserByEmail(email);

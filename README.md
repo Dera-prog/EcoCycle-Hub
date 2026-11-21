@@ -86,7 +86,7 @@ npm run preview    # serve the production build
 
 ## Backend (Docker + PostgreSQL)
 
-The API is a Fastify 5 service in `server/` backed by PostgreSQL 16. Both run in containers, so the host needs only Docker (with WSL 2 on Windows). Data is seeded automatically on first boot.
+The API is a Fastify 5 service in `server/` backed by PostgreSQL 16. Both run in containers, so the host needs only Docker (with WSL 2 on Windows). The container applies migrations with `node-pg-migrate` on every boot and seeds the demo account only on an empty database.
 
 ```bash
 docker compose up -d --build     # db on :5436, api on :4001
@@ -115,6 +115,7 @@ Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/api/live` | liveness only (no database) |
 | `GET` | `/api/health` | liveness + database check |
 | `GET` | `/api/categories` | waste categories and per-kg rates |
 | `POST` | `/api/auth/signup` | create account, returns JWT + state |
@@ -127,7 +128,80 @@ Seeded account: **amaka@gmail.com / demo1234** (Gold Recycler with history). New
 | `POST` | `/api/notifications/read-all` | mark notifications read (auth) |
 | `POST` | `/api/demo/reset` | restore the seeded state (auth) |
 
-Every mutation returns the full updated snapshot (`{ state }`), which the frontend swaps in directly. Schema DDL and seed data live in `server/src/db.ts` and run idempotently at startup.
+Every mutation returns the full updated snapshot (`{ state }`), which the frontend swaps in directly.
+
+## Database migrations
+
+The schema is versioned with [`node-pg-migrate`](https://salsita.github.io/node-pg-migrate/). SQL files live in `server/migrations/` and are applied in filename order; the container runs them automatically before the API starts.
+
+```bash
+cd server
+npm run migrate:dev     # apply pending migrations against DATABASE_URL (tsx, no build needed)
+npm run migrate:down    # roll back the most recent migration
+```
+
+To add a migration, create `server/migrations/0002_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
+
+## API tests
+
+The suite uses Node's built-in test runner against a real PostgreSQL database (no mocks). It creates and drops a separate `ecocycle_test` database so your dev data is never touched.
+
+```bash
+cd server
+npm run typecheck                 # tsc --noEmit across src and test
+npm test                          # 7 end-to-end API tests
+```
+
+With the Docker stack running, the defaults already point at it. Otherwise set `TEST_ADMIN_URL` (a connection to the `postgres` database, used to create `ecocycle_test`) and `TEST_DATABASE_URL`.
+
+```bash
+TEST_ADMIN_URL=postgres://ecocycle:ecocycle@localhost:5436/postgres npm test
+```
+
+## Configuration
+
+All configuration is environment-driven and validated at startup (`server/src/config.ts`). In production the API refuses to boot if `DATABASE_URL` is missing, `JWT_SECRET` is shorter than 32 characters, or `SEED_DEMO` is enabled — no insecure defaults slip through.
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `DATABASE_URL` | prod | local compose URL | PostgreSQL connection string |
+| `JWT_SECRET` | prod | dev-only fallback | Signs auth tokens; ≥32 chars in production |
+| `CORS_ORIGIN` | prod | `*` in dev only | Comma-separated allowed frontend origins |
+| `PORT` | no | `4000` | HTTP port |
+| `NODE_ENV` | no | `development` | `production` turns on the fail-fast checks |
+| `SEED_DEMO` | no | `false` | Seed the Amaka demo account on an empty DB (refused in production) |
+| `SENTRY_DSN` | no | — | Enables error reporting when set |
+| `LOG_LEVEL` | no | `info` | Pino log level (`silent` in tests) |
+| `TRUST_PROXY` | no | `true` | Trust `X-Forwarded-*` from a load balancer (set `false` when serving directly) |
+| `DB_POOL_MAX` | no | `10` | Max Postgres pool connections |
+
+### Production hardening
+
+- **Rate limiting** — 300 requests/min globally, 10/min on auth routes (`@fastify/rate-limit`)
+- **Request size** — 64 KB body limit; oversized payloads are rejected
+- **Security headers** — `@fastify/helmet` (CSP left off so the JSON API stays usable across origins)
+- **Error tracking** — `@sentry/node` loaded lazily only when `SENTRY_DSN` is set; 5xx responses are reported
+- **Log hygiene** — `authorization` and `cookie` headers are redacted from request logs
+- **Graceful shutdown** — SIGTERM/SIGINT drain in-flight requests and close the pool
+- **Data integrity** — `CHECK` constraints on balances (never negative), weights, and rates; withdrawals use a conditional `UPDATE` so concurrent requests can't overdraw
+- **Duplicate sign-ups** — the unique-violation race is caught and returned as `409`
+
+## Deploying the API
+
+`render.yaml` is a [Render Blueprint](https://render.com/docs/blueprint-spec) that provisions a Dockerised web service plus a managed PostgreSQL instance in one step.
+
+1. Push this repo, then in Render choose **New → Blueprint** and point it at the repo.
+2. Render creates the database, injects `DATABASE_URL`, and generates `JWT_SECRET`.
+3. Set `CORS_ORIGIN` to your frontend origin(s) and, optionally, `SENTRY_DSN`.
+4. The service builds `server/Dockerfile`, runs migrations on boot, and serves `/api/health` as its health check.
+
+The blueprint uses free plans so you can stand it up at no cost; Render's free PostgreSQL expires after its trial window, so upgrade the database (and optionally the web service) before running real traffic. For a custom domain, add it in the Render dashboard and point your DNS at the provided target.
+
+The same image runs on Fly.io or Railway: set the env vars above, run the container, and point the platform health check at `/api/live`.
+
+**Backups** — managed Postgres providers (Render, Neon, Supabase) take automated daily backups and allow point-in-time restore. Keep the retention window at 7 days or more, test a restore before launch, and never enable `SEED_DEMO` against a production database.
+
+**CI** — `.github/workflows/ci.yml` runs on every push and pull request: the `web` job builds the frontend, and the `api` job spins up PostgreSQL 16, then runs typecheck, the test suite, and the Docker build. A red CI run blocks the PR from merging.
 
 ## Project structure
 
@@ -142,16 +216,27 @@ src/
                          # Pricing, SignIn, SignUp, Dashboard, Schedule,
                          # Wallet, EcoImpact, TrackAgent
 server/
-├── src/index.ts         # Fastify bootstrap
-├── src/db.ts            # schema, seed, snapshot queries
+├── migrations/          # versioned SQL migrations (node-pg-migrate)
+├── test/api.test.ts     # end-to-end API tests on a real Postgres
+├── src/index.ts         # bootstrap: migrate, seed, listen, graceful shutdown
+├── src/app.ts           # Fastify instance: plugins, limits, error handling
+├── src/config.ts        # env parsing + production fail-fast validation
+├── src/migrate.ts       # node-pg-migrate runner
+├── src/seed.ts          # idempotent demo seed (gated by SEED_DEMO)
+├── src/monitoring.ts    # optional Sentry init + captureError
+├── src/db.ts            # pool + snapshot queries
 ├── src/auth.ts          # JWT sign/verify + auth hook
 └── src/routes/          # auth, collections, wallet, misc
+.github/workflows/ci.yml # typecheck + tests + Docker build on every PR
+render.yaml              # Render blueprint: web service + managed Postgres
 docker-compose.yml       # db + api services
 ```
 
 ## Deployment
 
-Deployed on **Vercel** at https://ecocycle-hub.vercel.app. Pushes to `main` deploy to production automatically. `vercel.json` contains the SPA rewrite so deep links (e.g. `/dashboard/wallet`) resolve correctly.
+Deployed on **Vercel** at https://ecocycle-hub.vercel.app. Pushes to `main` deploy to production automatically, and pull requests get preview deployments. `vercel.json` contains the SPA rewrite so deep links (e.g. `/dashboard/wallet`) resolve correctly.
+
+The frontend is deployed without `VITE_API_URL`, so the public demo runs on localStorage. The API and database deploy separately on Render via `render.yaml` — see [Deploying the API](#deploying-the-api). To point a deployment at the live API, set `VITE_API_URL` to its URL in the frontend environment.
 
 ## Demo notes
 

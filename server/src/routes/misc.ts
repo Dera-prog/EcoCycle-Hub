@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { pool } from '../db.js';
 
 export default async function miscRoutes(app: FastifyInstance) {
+  app.get('/api/live', async (_request, reply) => {
+    return reply.send({ ok: true });
+  });
+
   app.get('/api/health', async (_request, reply) => {
     try {
       await pool.query('SELECT 1');

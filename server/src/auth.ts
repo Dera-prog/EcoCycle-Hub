@@ -1,15 +1,14 @@
 import jwt from 'jsonwebtoken';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-
-const SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+import { config } from './config.js';
 
 export function signToken(userId: string): string {
-  return jwt.sign({ sub: userId }, SECRET, { expiresIn: '7d' });
+  return jwt.sign({ sub: userId }, config.jwtSecret, { expiresIn: '7d' });
 }
 
 export function verifyToken(token: string): string | null {
   try {
-    const payload = jwt.verify(token, SECRET) as jwt.JwtPayload;
+    const payload = jwt.verify(token, config.jwtSecret) as jwt.JwtPayload;
     return typeof payload.sub === 'string' ? payload.sub : null;
   } catch {
     return null;
