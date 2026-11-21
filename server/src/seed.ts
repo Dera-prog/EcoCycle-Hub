@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { pathToFileURL } from 'node:url';
 import { pool } from './db.js';
+import { platformAccount, postLedger, userAccounts } from './ledger.js';
 
 const SEED_COLLECTIONS = [
   ['pc-8821', 'plastic', 'GreenCycle Ltd', 'Today', '2:00 PM', 4.5, '12 Okota Road, Lagos', 'assigned', null, '#PC-8821', 80],
@@ -33,12 +34,24 @@ export async function seedDemoData(): Promise<void> {
     await client.query('BEGIN');
     const passwordHash = await bcrypt.hash('demo1234', 10);
     const user = await client.query<{ id: string }>(
-      `INSERT INTO users (name, email, phone, password_hash, role, persona, tier, phone_verified_at, balance, pending, total_earned, total_recycled, month_kg)
-       VALUES ($1, $2, $3, $4, 'customer', 'returning', 'Gold Recycler', now(), 48200, 2640, 48200, 1240, 89)
+      `INSERT INTO users (name, email, phone, password_hash, role, persona, tier, phone_verified_at, total_earned, total_recycled, month_kg)
+       VALUES ($1, $2, $3, $4, 'customer', 'returning', 'Gold Recycler', now(), 48200, 1240, 89)
        RETURNING id`,
       ['Amaka Obi', 'amaka@gmail.com', '+2348035550192', passwordHash],
     );
     const userId = user.rows[0].id;
+
+    const accounts = await userAccounts(client, userId);
+    const funder = await platformAccount(client, 'platform_earnings');
+    await postLedger(
+      client,
+      { type: 'opening', id: userId, memo: 'Opening balance' },
+      [
+        { accountId: funder, direction: 'debit', amount: 48200 + 2640 },
+        { accountId: accounts.wallet, direction: 'credit', amount: 48200 },
+        { accountId: accounts.pending, direction: 'credit', amount: 2640 },
+      ],
+    );
 
     let agentId: string | null = null;
     for (const [name, email, phone, role] of [
@@ -53,11 +66,11 @@ export async function seedDemoData(): Promise<void> {
       if (role === 'agent') agentId = staff.rows[0].id;
     }
 
-    await client.query('INSERT INTO bank_accounts (user_id, bank_name, last4) VALUES ($1, $2, $3)', [
-      userId,
-      'First Bank Nigeria',
-      '4721',
-    ]);
+    await client.query(
+      `INSERT INTO bank_accounts (user_id, bank_name, last4, account_number, bank_code, account_name)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, 'First Bank Nigeria', '4721', '3000004721', '011', 'Amaka Obi'],
+    );
 
     for (const c of SEED_COLLECTIONS) {
       await client.query(

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ClipboardList, MapPin, Phone, RefreshCw, Truck } from 'lucide-react';
+import { Banknote, ClipboardList, MapPin, Phone, RefreshCw, RotateCcw, Truck } from 'lucide-react';
 import { useToast } from '../components/ui';
 import { categoryMap, formatNaira } from '../data';
 import { useApp } from '../store';
-import type { OpsPickup } from '../types';
+import type { OpsPayout, OpsPickup, PendingEarning } from '../types';
 
 const statusLabels: Record<string, string> = {
   upcoming: 'Awaiting agent',
@@ -14,11 +14,21 @@ const statusLabels: Record<string, string> = {
   cancelled: 'Cancelled',
 };
 
+const payoutLabels: Record<string, string> = {
+  pending: 'Queued',
+  processing: 'Processing',
+  paid: 'Paid',
+  failed: 'Failed',
+};
+
 export default function Ops() {
-  const { apiMode, user, loadOps, assignPickup, movePickup } = useApp();
+  const { apiMode, user, loadOps, assignPickup, movePickup, confirmPayout, retryPayout, settleEarnings } = useApp();
   const { show } = useToast();
   const [pickups, setPickups] = useState<OpsPickup[]>([]);
   const [agents, setAgents] = useState<Array<{ id: string; name: string; phone: string }>>([]);
+  const [payouts, setPayouts] = useState<OpsPayout[]>([]);
+  const [pendingEarnings, setPendingEarnings] = useState<PendingEarning[]>([]);
+  const [provider, setProvider] = useState('');
   const [agentChoice, setAgentChoice] = useState<Record<string, string>>({});
   const [weights, setWeights] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -38,6 +48,9 @@ export default function Ops() {
     setError('');
     setPickups(result.board.pickups);
     setAgents(result.board.agents);
+    setPayouts(result.board.payouts);
+    setPendingEarnings(result.board.pendingEarnings);
+    setProvider(result.board.provider);
   }, [loadOps]);
 
   useEffect(() => {
@@ -72,6 +85,42 @@ export default function Ops() {
       return;
     }
     show('Agent assigned.');
+    await load();
+  };
+
+  const settle = async (userId: string, name: string) => {
+    setBusy(userId);
+    const result = await settleEarnings(userId);
+    setBusy(null);
+    if (!result.ok) {
+      show(result.error ?? 'Could not release the earnings.');
+      return;
+    }
+    show(`Earnings released to ${name}.`);
+    await load();
+  };
+
+  const closePayout = async (id: string, outcome: 'paid' | 'failed') => {
+    setBusy(id);
+    const result = await confirmPayout(id, outcome);
+    setBusy(null);
+    if (!result.ok) {
+      show(result.error ?? 'Could not close the payout.');
+      return;
+    }
+    show(outcome === 'paid' ? 'Payout marked paid.' : 'Payout marked failed and refunded.');
+    await load();
+  };
+
+  const retry = async (id: string) => {
+    setBusy(id);
+    const result = await retryPayout(id);
+    setBusy(null);
+    if (!result.ok) {
+      show(result.error ?? 'Could not retry the payout.');
+      return;
+    }
+    show('Payout retried.');
     await load();
   };
 
@@ -255,6 +304,114 @@ export default function Ops() {
           <div className="ops-list">{closed.map(card)}</div>
         )}
       </section>
+
+      {user.role === 'admin' && (
+        <>
+          {provider === 'console' && (
+            <p className="ops-note">
+              Console payout provider: transfers are simulated. Close each payout by hand, or set
+              PAYMENTS_PROVIDER=paystack to send real transfers.
+            </p>
+          )}
+          {provider === 'none' && (
+            <p className="ops-note">Payouts are paused — no payment provider is connected to this server.</p>
+          )}
+
+          <section className="ops-section">
+            <h2>
+              <Banknote size={17} /> Pending earnings
+            </h2>
+            {pendingEarnings.length === 0 ? (
+              <p className="muted">Nothing waiting to be released.</p>
+            ) : (
+              <div className="ops-list">
+                {pendingEarnings.map((earning) => (
+                  <article className="card ops-card" key={earning.userId}>
+                    <header className="ops-card-head">
+                      <div>
+                        <strong>{earning.name}</strong>
+                        <span>{earning.phone}</span>
+                      </div>
+                      <span className="ops-status is-pending">{formatNaira(earning.amount)} pending</span>
+                    </header>
+                    <div className="ops-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={busy === earning.userId}
+                        onClick={() => void settle(earning.userId, earning.name)}
+                      >
+                        Release {formatNaira(earning.amount)}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="ops-section">
+            <h2>Payout queue</h2>
+            {payouts.length === 0 ? (
+              <p className="muted">No withdrawals requested yet.</p>
+            ) : (
+              <div className="ops-list">
+                {payouts.map((payout) => (
+                  <article className="card ops-card" key={payout.id}>
+                    <header className="ops-card-head">
+                      <div>
+                        <strong>{formatNaira(payout.amount)}</strong>
+                        <span>
+                          {payout.bank.name} ···· {payout.bank.last4} · {payout.customer.name}
+                        </span>
+                      </div>
+                      <span className={`ops-status is-${payout.status}`}>{payoutLabels[payout.status]}</span>
+                    </header>
+                    <div className="ops-meta">
+                      <span>
+                        <Phone size={14} /> {payout.customer.phone}
+                      </span>
+                      {payout.failureReason && <span>Reason: {payout.failureReason}</span>}
+                    </div>
+                    <div className="ops-actions">
+                      {provider === 'console' && ['pending', 'processing'].includes(payout.status) && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm"
+                            disabled={busy === payout.id}
+                            onClick={() => void closePayout(payout.id, 'paid')}
+                          >
+                            Confirm paid
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline btn-sm"
+                            disabled={busy === payout.id}
+                            onClick={() => void closePayout(payout.id, 'failed')}
+                          >
+                            Mark failed
+                          </button>
+                        </>
+                      )}
+                      {payout.status === 'failed' && (
+                        <button
+                          type="button"
+                          className="btn btn-outline btn-sm"
+                          disabled={busy === payout.id}
+                          onClick={() => void retry(payout.id)}
+                        >
+                          <RotateCcw size={14} /> Retry payout
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }

@@ -168,11 +168,62 @@ upcoming ──assign──▶ assigned ──start route──▶ en_route ─�
 | Agent | `POST /api/ops/pickups/:id/transition` | `en_route` → `arrived` → `complete` (with weight), or `release` |
 | Any | `GET /api/service-areas` | Active areas with per-category ₦/kg rates |
 
-The customer's booking is an **estimate**. When the agent completes the pickup they enter the confirmed weight on the scale; the server prices it at the area rate (`confirmed_weight × rate`), credits the customer's pending balance, writes a `Pending` payment row, and texts the result. Only the assigned agent (or an admin) can advance their own pickup — another agent gets `403`, and out-of-order moves get `409`.
+The customer's booking is an **estimate**. When the agent completes the pickup they enter the confirmed weight on the scale; the server prices it at the area rate (`confirmed_weight × rate`), credits the customer's pending-earnings ledger account from platform earnings, writes a `Pending` payment row, and texts the result. Only the assigned agent (or an admin) can advance their own pickup — another agent gets `403`, and out-of-order moves get `409`.
 
 **Service-area pricing.** `service_areas` holds three launch areas (Okota & Surulere, Lekki & Victoria Island, Abuja Central) with per-category rates in `service_area_rates`. Mainland uses the base category rate, the island is ~15% higher, Abuja ~10%. Existing collections are backfilled from their address, and each collection stores the `area` and `rate` used at booking so later price changes never rewrite history.
 
 **Ops console.** When signed in as `agent@ecocycle.ng` or `admin@ecocycle.ng` with the API running, an **Ops** tab appears in the dashboard nav. Admins see every active pickup and can assign agents; agents see their own queue with the next allowed action, including the confirm-weight input on arrival. Customers never see the tab. Demo mode (no API) has no ops console.
+
+## Money: double-entry ledger and payouts
+
+Balances are no longer columns on `users` — they are **derived from a ledger**, so every naira has a matching counter-entry and the books can always be proven to balance.
+
+**Accounts and entries.** `ledger_accounts` holds a `wallet` and a `pending` account per user plus three platform accounts: `platform_earnings`, `platform_payouts` and `platform_bank`. `ledger_entries` records one row per leg with a `direction` (`debit`/`credit`) and a positive `amount` (integer naira). Legs are grouped by `txn_id`, and `postLedger()` (`server/src/ledger.ts`) refuses to write a transaction unless it has at least two legs whose debits equal its credits. A balance is simply `SUM(credit) − SUM(debit)` on that account, which is what `walletBalances()` returns as `{ available, pending }`.
+
+**Every movement is a balanced transaction**
+
+| Event | Debit | Credit |
+| --- | --- | --- |
+| Agent confirms a pickup | `platform_earnings` | customer `pending` |
+| Admin releases pending earnings | customer `pending` | customer `wallet` |
+| Customer requests a withdrawal | customer `wallet` | `platform_payouts` (funds held) |
+| Provider confirms the transfer | `platform_payouts` | `platform_bank` |
+| Transfer fails | `platform_payouts` | customer `wallet` (refund) |
+
+The migration backfills each user's old `balance` and `pending` columns as an opening transaction against `platform_earnings`, then drops the columns. A test asserts the trial balance (total debits − total credits across all entries) is zero after settlement and after a failed payout.
+
+**Payout lifecycle.** A withdrawal creates a `payouts` row (`pending`), holds the money in `platform_payouts`, writes a `Pending` payment row and asks the provider adapter to start the transfer. From there:
+
+```
+pending ──provider accepted──▶ processing ──webhook: success──▶ paid
+   │                             │
+   │                             └──webhook: failed/reversed──▶ failed ──retry──▶ processing
+   └──provider rejected──▶ failed ──retry──▶ processing
+```
+
+Each request carries a `requestKey` with a unique index, so a double-tapped **Withdraw** button returns the original payout instead of debiting twice. Failed payouts refund the customer's wallet automatically and notify them in-app; an admin can retry once the balance is still there (the retry re-holds the funds before calling the provider again).
+
+**Provider adapter.** `PAYMENTS_PROVIDER` selects the adapter in `server/src/payments.ts`:
+
+| Value | Behaviour |
+| --- | --- |
+| `console` | Default in development. Logs the transfer and returns `console-<payoutId>`; admins close each payout by hand from the ops queue. |
+| `paystack` | Creates a Paystack transfer recipient and transfer (`PAYSTACK_SECRET_KEY` required). Settlement comes from the signed webhook. |
+| `none` | Default in production when unset. `/api/wallet/withdraw` and `/api/ops/payouts/:id/retry` return `503`; the wallet UI says payouts are unavailable instead of pretending. |
+
+**Webhook.** `POST /api/webhooks/paystack` verifies the `x-paystack-signature` HMAC-SHA512 over the **raw** body (Fastify keeps a copy before JSON parsing), ignores non-transfer events, and dedupes by Paystack's event id in `payment_events` — a replayed delivery returns `{ duplicate: true }` and cannot double-settle. `transfer.success` closes the payout to `platform_bank`; `transfer.failed` and `transfer.reversed` refund the wallet. The endpoint answers `503` unless `PAYMENTS_PROVIDER=paystack`, so an unconfigured server never accepts fake events.
+
+| Endpoint | Role | Purpose |
+| --- | --- | --- |
+| `POST /api/wallet/withdraw` | customer | Request a payout (idempotent via `requestKey`) |
+| `PUT /api/bank-account` | customer | Save bank details (10-digit NUBAN required under Paystack) |
+| `GET /api/ops/payouts` | admin | Payout queue plus per-customer pending earnings and the active provider |
+| `POST /api/ops/payouts/:id/confirm` | admin | Close a console payout as `paid`/`failed` |
+| `POST /api/ops/payouts/:id/retry` | admin | Re-hold and re-send a failed payout |
+| `POST /api/ops/customers/:id/settle` | admin | Release pending earnings into the wallet |
+| `POST /api/webhooks/paystack` | provider | Signed transfer events |
+
+The ops console shows the provider in plain words ("transfers are simulated" for console, "payouts are paused" for none), a **Pending earnings** list with a release button per customer, and a **Payout queue** with the failure reason and retry/confirm actions. The wallet history shows `Pending`, `Processing`, `Paid` and `Failed` badges, plus the provider's failure reason.
 
 ## Database migrations
 
@@ -184,7 +235,7 @@ npm run migrate:dev     # apply pending migrations against DATABASE_URL (tsx, no
 npm run migrate:down    # roll back the most recent migration
 ```
 
-To add a migration, create `server/migrations/0004_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
+To add a migration, create `server/migrations/0005_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
 
 ## API tests
 
@@ -193,7 +244,7 @@ The suite uses Node's built-in test runner against a real PostgreSQL database (n
 ```bash
 cd server
 npm run typecheck                 # tsc --noEmit across src and test
-npm test                          # 14 end-to-end API tests
+npm test                          # 17 end-to-end API tests
 ```
 
 With the Docker stack running, the defaults already point at it. Otherwise set `TEST_ADMIN_URL` (a connection to the `postgres` database, used to create `ecocycle_test`) and `TEST_DATABASE_URL`.
@@ -220,6 +271,9 @@ All configuration is environment-driven and validated at startup (`server/src/co
 | `DB_POOL_MAX` | no | `10` | Max Postgres pool connections |
 | `SMS_PROVIDER` | no | `console` dev / `none` prod | `console` logs OTP codes; `none` disables phone sign-in |
 | `SMS_FROM` | no | `EcoCycle` | Sender name shown in OTP messages |
+| `PAYMENTS_PROVIDER` | no | `console` dev / `none` prod | `console` simulates transfers; `paystack` sends real ones; `none` disables withdrawals |
+| `PAYSTACK_SECRET_KEY` | with paystack | — | Transfer API key and webhook HMAC secret; boot fails if `PAYMENTS_PROVIDER=paystack` and it is unset |
+| `PAYSTACK_API` | no | `https://api.paystack.co` | Base URL (override for tests/sandboxes) |
 | `OTP_TTL_SECONDS` | no | `300` | Code lifetime |
 | `OTP_MAX_ATTEMPTS` | no | `5` | Wrong guesses before a code locks |
 | `OTP_RESEND_SECONDS` | no | `60` | Minimum gap between code requests per number |
@@ -232,7 +286,7 @@ All configuration is environment-driven and validated at startup (`server/src/co
 - **Error tracking** — `@sentry/node` loaded lazily only when `SENTRY_DSN` is set; 5xx responses are reported
 - **Log hygiene** — `authorization` and `cookie` headers are redacted from request logs
 - **Graceful shutdown** — SIGTERM/SIGINT drain in-flight requests and close the pool
-- **Data integrity** — `CHECK` constraints on balances (never negative), weights, and rates; withdrawals use a conditional `UPDATE` so concurrent requests can't overdraw
+- **Data integrity** — balances are derived from a double-entry ledger whose transactions must balance; withdrawals hold funds and use a unique `requestKey` so retries can't double-debit; weights, rates and ledger amounts have `CHECK` constraints
 - **Duplicate sign-ups** — the unique-violation race is caught and returned as `409`
 
 ## Deploying the API
@@ -297,11 +351,14 @@ server/
 ├── src/monitoring.ts    # optional Sentry init + captureError
 ├── src/phone.ts         # Nigerian phone normalisation to E.164
 ├── src/lifecycle.ts     # pickup status machine + allowed transitions
+├── src/ledger.ts        # double-entry posting, accounts, derived balances
+├── src/payments.ts      # payment provider adapter (console | paystack)
+├── src/payouts.ts       # payout settlement + provider transfer start
 ├── src/notify.ts        # in-app notification + SMS fan-out
 ├── src/sms.ts           # SMS provider stub (console | none)
 ├── src/db.ts            # pool + snapshot queries
 ├── src/auth.ts          # JWT sign/verify, requireAuth, requireRole
-└── src/routes/          # auth, otp, ops, collections, wallet, misc
+└── src/routes/          # auth, otp, ops, collections, wallet, payments, misc
 .github/workflows/ci.yml # typecheck + tests + Docker build on every PR
 render.yaml              # Render blueprint: web service + managed Postgres
 docker-compose.yml       # db + api services

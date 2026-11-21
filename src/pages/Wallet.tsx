@@ -13,12 +13,19 @@ import DashHeader from '../components/DashHeader';
 import { EmptyState, Modal, useToast } from '../components/ui';
 import { useApp } from '../store';
 import { formatNaira } from '../data';
+import type { Payment } from '../types';
 
 type Period = 'All time' | '2024' | '2023';
 const quickAmounts = [5000, 10000, 20000];
+const badgeClass: Record<Payment['status'], string> = {
+  Paid: 'badge-paid',
+  Pending: 'badge-pending',
+  Processing: 'badge-processing',
+  Failed: 'badge-failed',
+};
 
 export default function Wallet() {
-  const { balance, pending, payments, bank, withdraw, updateBank, totalEarned, persona } = useApp();
+  const { balance, pending, payments, bank, withdraw, updateBank, totalEarned, persona, apiMode } = useApp();
   const { show } = useToast();
   const [open, setOpen] = useState(false);
   const [stage, setStage] = useState<1 | 2 | 3>(1);
@@ -38,7 +45,9 @@ export default function Wallet() {
   const history = useMemo(() => {
     if (period === 'All time') return payments;
     if (period === '2023') return [];
-    return payments.filter((p) => p.dateLabel.includes('2024') || p.status === 'Pending');
+    return payments.filter(
+      (p) => p.dateLabel.includes('2024') || p.status === 'Pending' || p.status === 'Processing' || p.status === 'Failed',
+    );
   }, [payments, period]);
 
   const resetWithdraw = () => {
@@ -192,12 +201,11 @@ export default function Wallet() {
                   {p.dateLabel}
                   {p.weight ? ` · ${p.weight} kg` : ''}
                 </span>
+                {p.failureReason && <span className="pay-reason">{p.failureReason}</span>}
               </div>
               <div className="pay-right">
                 <strong>{formatNaira(p.amount)}</strong>
-                <span className={`badge ${p.status === 'Paid' ? 'badge-paid' : 'badge-pending'}`}>
-                  {p.status}
-                </span>
+                <span className={`badge ${badgeClass[p.status]}`}>{p.status}</span>
               </div>
             </article>
           ))}
@@ -216,7 +224,7 @@ export default function Wallet() {
       <Modal
         open={open}
         onClose={resetWithdraw}
-        title={stage === 3 ? 'Withdrawal sent' : 'Withdraw Funds'}
+        title={stage === 3 ? (apiMode ? 'Withdrawal requested' : 'Withdrawal sent') : 'Withdraw Funds'}
         subtitle={stage === 1 ? 'Step 1 of 2' : stage === 2 ? 'Step 2 of 2' : undefined}
         footer={
           stage === 1 ? (
@@ -338,8 +346,9 @@ export default function Wallet() {
             </span>
             <h3>{formatNaira(value)} on its way</h3>
             <p>
-              Your withdrawal to {bank.name} •••• {bank.last4} has been initiated and should arrive
-              within 24 hours.
+              {apiMode
+                ? `Your withdrawal to ${bank.name} •••• ${bank.last4} is queued. We'll notify you when your bank confirms the payment.`
+                : `Your withdrawal to ${bank.name} •••• ${bank.last4} has been initiated and should arrive within 24 hours.`}
             </p>
           </div>
         )}

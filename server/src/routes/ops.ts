@@ -1,8 +1,12 @@
 import type { FastifyInstance } from 'fastify';
+import { config } from '../config.js';
 import { requireRole } from '../auth.js';
 import { findUserById, pool } from '../db.js';
+import { platformAccount, postLedger, userAccounts, walletBalances } from '../ledger.js';
 import { canAgentMove, targetStatus, type AgentAction } from '../lifecycle.js';
 import { notifyCustomer } from '../notify.js';
+import { payoutsConfigured } from '../payments.js';
+import { settlePayout, startPayoutTransfer, type PayoutRow } from '../payouts.js';
 
 interface PickupRow {
   id: string;
@@ -228,10 +232,20 @@ export default async function opsRoutes(app: FastifyInstance) {
             `UPDATE collections SET status = 'completed', confirmed_weight = $1, earning = $2 WHERE id = $3`,
             [confirmed, earning, pickup.id],
           );
+          const accounts = await userAccounts(client, pickup.customer_id);
+          const funder = await platformAccount(client, 'platform_earnings');
+          await postLedger(
+            client,
+            { type: 'pickup_earning', id: pickup.id, memo: `Earning for pickup ${pickup.id}` },
+            [
+              { accountId: funder, direction: 'debit', amount: earning! },
+              { accountId: accounts.pending, direction: 'credit', amount: earning! },
+            ],
+          );
           await client.query(
-            `UPDATE users SET pending = pending + $1, month_kg = GREATEST(0, month_kg + $2),
-             total_recycled = total_recycled + $3 WHERE id = $4`,
-            [earning, Math.round(confirmed! - Number(pickup.weight)), Math.round(confirmed!), pickup.customer_id],
+            `UPDATE users SET month_kg = GREATEST(0, month_kg + $1), total_recycled = total_recycled + $2
+             WHERE id = $3`,
+            [Math.round(confirmed! - Number(pickup.weight)), Math.round(confirmed!), pickup.customer_id],
           );
           await client.query(
             `INSERT INTO payments (id, user_id, company, date_label, weight, amount, status)
@@ -277,6 +291,232 @@ export default async function opsRoutes(app: FastifyInstance) {
         const updated = await client.query<PickupRow>(`${PICKUP_SELECT} WHERE c.id = $1`, [pickup.id]);
         await client.query('COMMIT');
         return reply.send({ pickup: pickupView(updated.rows[0]) });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  interface PayoutListRow {
+    id: string;
+    amount: string;
+    status: string;
+    provider: string;
+    provider_ref: string | null;
+    failure_reason: string | null;
+    bank_name: string;
+    bank_last4: string;
+    created_at: string;
+    user_id: string;
+    name: string;
+    phone: string;
+  }
+
+  const PAYOUT_SELECT = `
+    SELECT po.id, po.amount, po.status, po.provider, po.provider_ref, po.failure_reason,
+           po.bank_name, po.bank_last4, po.created_at, u.id AS user_id, u.name, u.phone
+    FROM payouts po JOIN users u ON u.id = po.user_id`;
+
+  function payoutView(row: PayoutListRow) {
+    return {
+      id: row.id,
+      amount: Number(row.amount),
+      status: row.status,
+      provider: row.provider,
+      providerRef: row.provider_ref,
+      failureReason: row.failure_reason,
+      bank: { name: row.bank_name, last4: row.bank_last4 },
+      customer: { id: row.user_id, name: row.name, phone: row.phone },
+      createdAt: row.created_at,
+    };
+  }
+
+  async function loadPayout(id: string): Promise<PayoutListRow | null> {
+    const { rows } = await pool.query<PayoutListRow>(`${PAYOUT_SELECT} WHERE po.id = $1`, [id]);
+    return rows[0] ?? null;
+  }
+
+  app.get('/api/ops/payouts', { preHandler: requireRole('admin') }, async () => {
+    const [payouts, pending] = await Promise.all([
+      pool.query<PayoutListRow>(`${PAYOUT_SELECT} ORDER BY po.created_at DESC LIMIT 100`),
+      pool.query<{ user_id: string; name: string; phone: string; amount: string }>(
+        `SELECT u.id AS user_id, u.name, u.phone,
+                SUM(CASE e.direction WHEN 'credit' THEN e.amount ELSE -e.amount END)::bigint AS amount
+         FROM ledger_accounts a
+         JOIN users u ON u.id = a.user_id
+         LEFT JOIN ledger_entries e ON e.account_id = a.id
+         WHERE a.kind = 'pending'
+         GROUP BY u.id, u.name, u.phone
+         HAVING SUM(CASE e.direction WHEN 'credit' THEN e.amount ELSE -e.amount END) > 0
+         ORDER BY amount DESC`,
+      ),
+    ]);
+    return {
+      provider: config.paymentsProvider,
+      payouts: payouts.rows.map(payoutView),
+      pendingEarnings: pending.rows.map((row) => ({
+        userId: row.user_id,
+        name: row.name,
+        phone: row.phone,
+        amount: Number(row.amount),
+      })),
+    };
+  });
+
+  app.post<{ Params: { id: string }; Body: { outcome?: string; reason?: string } }>(
+    '/api/ops/payouts/:id/confirm',
+    { preHandler: requireRole('admin') },
+    async (request, reply) => {
+      if (config.paymentsProvider !== 'console') {
+        return reply.code(409).send({ error: 'Payouts settle through the provider webhook.' });
+      }
+      const outcome = request.body.outcome === 'failed' ? 'failed' : 'paid';
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const found = await client.query<PayoutRow>('SELECT * FROM payouts WHERE id = $1 FOR UPDATE', [
+          request.params.id,
+        ]);
+        if (found.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return reply.code(404).send({ error: 'Payout not found.' });
+        }
+        const settled = await settlePayout(client, found.rows[0], outcome, request.body.reason);
+        if (!settled) {
+          await client.query('ROLLBACK');
+          return reply.code(409).send({ error: 'Only an open payout can be confirmed.' });
+        }
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+      return reply.send({ payout: payoutView((await loadPayout(request.params.id))!) });
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    '/api/ops/payouts/:id/retry',
+    { preHandler: requireRole('admin') },
+    async (request, reply) => {
+      if (!payoutsConfigured()) {
+        return reply.code(503).send({ error: 'Payouts are not configured on this server.' });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const found = await client.query<PayoutRow>('SELECT * FROM payouts WHERE id = $1 FOR UPDATE', [
+          request.params.id,
+        ]);
+        if (found.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return reply.code(404).send({ error: 'Payout not found.' });
+        }
+        const payout = found.rows[0];
+        if (payout.status !== 'failed') {
+          await client.query('ROLLBACK');
+          return reply.code(409).send({ error: 'Only a failed payout can be retried.' });
+        }
+
+        await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [payout.user_id]);
+        const balances = await walletBalances(client, payout.user_id);
+        if (Number(payout.amount) > balances.available) {
+          await client.query('ROLLBACK');
+          return reply.code(409).send({ error: 'The customer no longer has enough balance to retry this payout.' });
+        }
+
+        const accounts = await userAccounts(client, payout.user_id);
+        const payoutsAccount = await platformAccount(client, 'platform_payouts');
+        const amount = Number(payout.amount);
+        await postLedger(
+          client,
+          { type: 'payout_hold', id: payout.id, memo: `Retry ${payout.id}` },
+          [
+            { accountId: accounts.wallet, direction: 'debit', amount },
+            { accountId: payoutsAccount, direction: 'credit', amount },
+          ],
+        );
+        await client.query(
+          `UPDATE payouts SET status = 'pending', failure_reason = NULL, provider_ref = NULL, updated_at = now()
+           WHERE id = $1`,
+          [payout.id],
+        );
+        await client.query('UPDATE payments SET status = $1 WHERE id = $2', ['Pending', `pay-${payout.id}`]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      const started = await startPayoutTransfer(request.params.id);
+      if (!started.ok) {
+        return reply.code(502).send({ error: `The payout provider rejected the retry: ${started.error}` });
+      }
+      return reply.send({ payout: payoutView((await loadPayout(request.params.id))!) });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { amount?: number } }>(
+    '/api/ops/customers/:id/settle',
+    { preHandler: requireRole('admin') },
+    async (request, reply) => {
+      const requested = Math.round(Number(request.body.amount ?? 0));
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const found = await client.query<{ id: string; name: string; phone: string }>(
+          'SELECT id, name, phone FROM users WHERE id = $1 FOR UPDATE',
+          [request.params.id],
+        );
+        if (found.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return reply.code(404).send({ error: 'Customer not found.' });
+        }
+        const customer = found.rows[0];
+        const balances = await walletBalances(client, customer.id);
+        const amount = requested > 0 ? requested : balances.pending;
+        if (amount <= 0) {
+          await client.query('ROLLBACK');
+          return reply.code(400).send({ error: 'No pending earnings to release.' });
+        }
+        if (amount > balances.pending) {
+          await client.query('ROLLBACK');
+          return reply
+            .code(400)
+            .send({ error: `Only ₦${balances.pending.toLocaleString('en-NG')} is pending for this customer.` });
+        }
+
+        const accounts = await userAccounts(client, customer.id);
+        await postLedger(
+          client,
+          { type: 'settlement', id: customer.id, memo: `Released pending earnings for ${customer.name}` },
+          [
+            { accountId: accounts.pending, direction: 'debit', amount },
+            { accountId: accounts.wallet, direction: 'credit', amount },
+          ],
+        );
+        await client.query(
+          `UPDATE payments SET status = 'Paid'
+           WHERE user_id = $1 AND status = 'Pending' AND company <> 'Bank withdrawal'`,
+          [customer.id],
+        );
+        await notifyCustomer(client, {
+          userId: customer.id,
+          phone: customer.phone,
+          title: 'Earnings released',
+          body: `₦${amount.toLocaleString('en-NG')} moved from pending to your available balance.`,
+          sms: `EcoCycle: ₦${amount.toLocaleString('en-NG')} is now available to withdraw.`,
+        });
+        await client.query('COMMIT');
+        return reply.send({ settled: amount, pending: balances.pending - amount });
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;

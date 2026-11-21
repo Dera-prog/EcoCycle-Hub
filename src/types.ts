@@ -87,7 +87,29 @@ export interface Payment {
   dateLabel: string;
   weight: number | null;
   amount: number;
-  status: 'Paid' | 'Pending';
+  status: 'Pending' | 'Processing' | 'Paid' | 'Failed';
+  failureReason?: string;
+}
+
+export type PayoutStatus = 'pending' | 'processing' | 'paid' | 'failed';
+
+export interface OpsPayout {
+  id: string;
+  amount: number;
+  status: PayoutStatus;
+  provider: string;
+  providerRef: string | null;
+  failureReason: string | null;
+  bank: { name: string; last4: string };
+  customer: { id: string; name: string; phone: string };
+  createdAt: string;
+}
+
+export interface PendingEarning {
+  userId: string;
+  name: string;
+  phone: string;
+  amount: number;
 }
 
 export interface BankAccount {
