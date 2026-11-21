@@ -17,6 +17,7 @@ import Schedule from './pages/Schedule';
 import Wallet from './pages/Wallet';
 import EcoImpact from './pages/EcoImpact';
 import TrackAgent from './pages/TrackAgent';
+import Ops from './pages/Ops';
 import AppShell from './components/AppShell';
 
 const marketingLinks = [
@@ -50,6 +51,7 @@ const routeTitles: Record<string, string> = {
   '/dashboard/wallet': 'Wallet — EcoCycle Hub',
   '/dashboard/impact': 'Eco Impact — EcoCycle Hub',
   '/track-agent': 'Track Agent — EcoCycle Hub',
+  '/ops': 'Ops Console — EcoCycle Hub',
 };
 
 function RouteTitle() {
@@ -251,6 +253,7 @@ export default function App() {
           <Route path="/dashboard/wallet" element={<Wallet />} />
           <Route path="/dashboard/impact" element={<EcoImpact />} />
           <Route path="/track-agent" element={<TrackAgent />} />
+          <Route path="/ops" element={<Ops />} />
         </Route>
 
         <Route path="/home" element={<Navigate to="/" replace />} />

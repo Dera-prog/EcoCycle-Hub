@@ -8,7 +8,7 @@ export default function DashHeader({ children }: { children: ReactNode }) {
   const isNew = persona === 'new' && totalRecycled === 0;
   const monthCount =
     persona === 'returning'
-      ? collections.filter((c) => c.status === 'upcoming').length + 2
+      ? collections.filter((c) => ['upcoming', 'assigned', 'en_route', 'arrived'].includes(c.status)).length + 2
       : collections.length;
   const firstName = user.name.split(' ')[0];
 

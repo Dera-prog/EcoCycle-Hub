@@ -27,6 +27,9 @@ export default function Wallet() {
   const [bankName, setBankName] = useState(bank.name);
   const [last4, setLast4] = useState(bank.last4);
   const [period, setPeriod] = useState<Period>('All time');
+  const [submitting, setSubmitting] = useState(false);
+  const [withdrawError, setWithdrawError] = useState('');
+  const [bankError, setBankError] = useState('');
 
   const linked = bank.last4.length === 4;
   const value = Number(amount) || 0;
@@ -42,6 +45,36 @@ export default function Wallet() {
     setOpen(false);
     setStage(1);
     setAmount('');
+    setWithdrawError('');
+    setSubmitting(false);
+  };
+
+  const confirmWithdraw = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setWithdrawError('');
+    const res = await withdraw(value);
+    setSubmitting(false);
+    if (!res.ok) {
+      setWithdrawError(res.error ?? 'Withdrawal failed. Please try again.');
+      return;
+    }
+    setStage(3);
+    show(`${formatNaira(value)} withdrawal initiated.`);
+  };
+
+  const saveBank = async () => {
+    setBankError('');
+    const res = await updateBank({
+      name: bankName || bank.name,
+      last4: last4.replace(/\D/g, '').slice(-4) || bank.last4,
+    });
+    if (!res.ok) {
+      setBankError(res.error ?? 'Could not update your payout account.');
+      return;
+    }
+    setBankOpen(false);
+    show('Payout account updated.');
   };
 
   const share = async () => {
@@ -203,13 +236,10 @@ export default function Wallet() {
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => {
-                  withdraw(value);
-                  setStage(3);
-                  show(`${formatNaira(value)} withdrawal initiated.`);
-                }}
+                onClick={() => void confirmWithdraw()}
+                disabled={submitting}
               >
-                Confirm Withdraw
+                {submitting ? 'Sending…' : 'Confirm Withdraw'}
               </button>
             </>
           ) : (
@@ -293,6 +323,11 @@ export default function Wallet() {
                 <dd>Within 24 hours</dd>
               </div>
             </dl>
+            {withdrawError && (
+              <p className="form-error" role="alert">
+                {withdrawError}
+              </p>
+            )}
           </div>
         )}
 
@@ -320,15 +355,7 @@ export default function Wallet() {
             <button type="button" className="btn btn-outline" onClick={() => setBankOpen(false)}>
               Cancel
             </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => {
-                updateBank({ name: bankName || bank.name, last4: last4.replace(/\D/g, '').slice(-4) || bank.last4 });
-                setBankOpen(false);
-                show('Payout account updated.');
-              }}
-            >
+            <button type="button" className="btn btn-primary" onClick={() => void saveBank()}>
               Save account
             </button>
           </>
@@ -357,6 +384,11 @@ export default function Wallet() {
           <p className="modal-copy">
             For your security, the full account number is never displayed after it is saved.
           </p>
+          {bankError && (
+            <p className="form-error" role="alert">
+              {bankError}
+            </p>
+          )}
         </div>
       </Modal>
     </DashHeader>

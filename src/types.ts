@@ -20,7 +20,13 @@ export interface Category {
   tip: string;
 }
 
-export type CollectionStatus = 'upcoming' | 'completed' | 'cancelled';
+export type CollectionStatus =
+  | 'upcoming'
+  | 'assigned'
+  | 'en_route'
+  | 'arrived'
+  | 'completed'
+  | 'cancelled';
 
 export interface Collection {
   id: string;
@@ -34,6 +40,36 @@ export interface Collection {
   earning?: number;
   pickupId?: string;
   rawDate?: string;
+  area?: string;
+  areaName?: string;
+  rate?: number;
+  confirmedWeight?: number;
+  agent?: { name: string; phone: string };
+}
+
+export interface ServiceArea {
+  key: string;
+  name: string;
+  city: string;
+  rates: Partial<Record<CategoryKey, number>>;
+}
+
+export interface OpsPickup {
+  id: string;
+  pickupId: string | null;
+  status: CollectionStatus;
+  category: CategoryKey;
+  weight: number;
+  confirmedWeight: number | null;
+  rate: number | null;
+  dateLabel: string;
+  time: string;
+  address: string;
+  area: string | null;
+  areaName: string | null;
+  earning: number | null;
+  customer: { name: string; phone: string };
+  agent: { id: string; name: string; phone: string } | null;
 }
 
 export interface Notification {
@@ -66,4 +102,5 @@ export interface PickupInput {
   time: string;
   address: string;
   earning: number;
+  area?: string;
 }

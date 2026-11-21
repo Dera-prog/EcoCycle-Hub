@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  api:
+    name: API
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ecocycle
+          POSTGRES_PASSWORD: ecocycle
+          POSTGRES_DB: ecocycle
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ecocycle -d ecocycle"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_ADMIN_URL: postgres://ecocycle:ecocycle@localhost:5432/postgres
+      TEST_DATABASE_URL: postgres://ecocycle:ecocycle@localhost:5432/ecocycle_test
+      JWT_SECRET: ci-secret-ci-secret-ci-secret-32
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build container image
+        working-directory: .
+        run: docker build -t ecocycle-api:ci server

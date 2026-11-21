@@ -5,6 +5,7 @@ import {
   Bell,
   BellOff,
   CalendarDays,
+  ClipboardList,
   LayoutDashboard,
   Leaf,
   LifeBuoy,
@@ -24,13 +25,17 @@ const appNav = [
   { to: '/dashboard/impact', label: 'Eco Impact', icon: Leaf },
 ];
 
+const opsNav = { to: '/ops', label: 'Ops', icon: ClipboardList };
+
 export default function AppShell() {
-  const { unreadCount, notifications, markAllRead, user, persona } = useApp();
+  const { unreadCount, notifications, markAllRead, user, persona, signOut } = useApp();
   const [panel, setPanel] = useState<'notifications' | 'profile' | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const { show } = useToast();
   const initial = user.name.trim().charAt(0).toUpperCase() || 'E';
+  const navItems =
+    user.role === 'agent' || user.role === 'admin' ? [...appNav, opsNav] : appNav;
 
   useEffect(() => {
     setPanel(null);
@@ -55,7 +60,7 @@ export default function AppShell() {
           </Link>
 
           <nav className="app-nav" aria-label="Dashboard">
-            {appNav.map(({ to, label, icon: Icon }) => (
+            {navItems.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -140,7 +145,7 @@ export default function AppShell() {
             <span className="avatar-lg">{initial}</span>
             <div>
               <strong>{user.name}</strong>
-              <span>{user.email}</span>
+              <span>{user.email || user.phone}</span>
               <em>{persona === 'returning' ? '🥇 Gold Recycler' : '🌱 New Recycler'}</em>
             </div>
           </div>
@@ -169,6 +174,7 @@ export default function AppShell() {
             className="signout-btn"
             onClick={() => {
               setPanel(null);
+              signOut();
               navigate('/sign-in');
             }}
           >
@@ -182,7 +188,7 @@ export default function AppShell() {
       </main>
 
       <nav className="bottom-nav" aria-label="Bottom navigation">
-        {appNav.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

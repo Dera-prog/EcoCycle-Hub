@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   Bluetooth,
@@ -23,6 +23,12 @@ const stepLabels = ['Category', 'Weight', 'Date & Time', 'Confirm'];
 
 const addresses = ['12 Okota Road, Lagos', '4 Bode Thomas, Surulere', '18 Admiralty Way, Lekki'];
 
+const AREA_ADDRESS: Record<string, string> = {
+  'lagos-mainland': '12 Okota Road, Lagos',
+  'lagos-island': '18 Admiralty Way, Lekki',
+  'abuja-central': 'Central Business District, Abuja',
+};
+
 function nextDays() {
   const out: { iso: string; day: string; num: number; today: boolean }[] = [];
   const base = new Date();
@@ -44,7 +50,7 @@ export default function Schedule() {
   const paramCategory = params.get('category') as CategoryKey | null;
   const initial = paramCategory && categoryMap[paramCategory] ? paramCategory : null;
 
-  const { addPickup } = useApp();
+  const { addPickup, apiMode, serviceAreas } = useApp();
   const { show } = useToast();
   const days = useMemo(nextDays, []);
   const [step, setStep] = useState(1);
@@ -53,11 +59,23 @@ export default function Schedule() {
   const [dateISO, setDateISO] = useState(days[0].iso);
   const [time, setTime] = useState('');
   const [address, setAddress] = useState(addresses[0]);
+  const [areaKey, setAreaKey] = useState('');
   const [success, setSuccess] = useState<Collection | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (apiMode && serviceAreas.length > 0 && !areaKey) {
+      const preferred = serviceAreas.find((a) => a.key === 'lagos-mainland') ?? serviceAreas[0];
+      setAreaKey(preferred.key);
+      setAddress(AREA_ADDRESS[preferred.key] ?? addresses[0]);
+    }
+  }, [apiMode, serviceAreas, areaKey]);
 
   const active = category ? categoryMap[category] : null;
+  const area = serviceAreas.find((a) => a.key === areaKey) ?? null;
+  const activeRate = active ? (area?.rates[category!] ?? active.rate) : 0;
   const numWeight = Number(weight) || 0;
-  const earning = active ? Math.round(numWeight * active.rate) : 0;
+  const earning = active ? Math.round(numWeight * activeRate) : 0;
 
   const selectedDay = days.find((d) => d.iso === dateISO);
   const dateShort = selectedDay
@@ -83,23 +101,33 @@ export default function Schedule() {
     setWeight('');
     setDateISO(days[0].iso);
     setTime('');
-    setAddress(addresses[0]);
+    const preferred = serviceAreas.find((a) => a.key === 'lagos-mainland') ?? serviceAreas[0];
+    setAddress(apiMode && preferred ? AREA_ADDRESS[preferred.key] ?? addresses[0] : addresses[0]);
+    setAreaKey(apiMode && preferred ? preferred.key : '');
     setSuccess(null);
+    setBusy(false);
   };
 
-  const confirm = () => {
-    if (!category) return;
-    const created = addPickup({
+  const confirm = async () => {
+    if (!category || busy) return;
+    setBusy(true);
+    const created = await addPickup({
       category,
       weight: numWeight,
       dateLabel: dateShort,
       time,
       address,
       earning,
+      ...(apiMode && areaKey ? { area: areaKey } : {}),
     });
+    setBusy(false);
+    if (!created) {
+      show('Could not schedule the pickup — please try again.');
+      return;
+    }
     setSuccess(created);
     setStep(5);
-    show('Pickup confirmed — your agent is assigned.');
+    show(apiMode ? 'Pickup confirmed — we will text you when an agent is assigned.' : 'Pickup confirmed — your agent is assigned.');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -121,7 +149,7 @@ export default function Schedule() {
               <span>Estimated earnings</span>
               <strong>{formatNaira(earning)}</strong>
               <em>
-                {numWeight} kg × {formatNaira(active.rate)}/kg
+                {numWeight} kg × {formatNaira(activeRate)}/kg
               </em>
             </div>
             <dl>
@@ -133,9 +161,15 @@ export default function Schedule() {
                 <dt>Address</dt>
                 <dd>{address}</dd>
               </div>
+              {area && (
+                <div>
+                  <dt>Service area</dt>
+                  <dd>{area.name}</dd>
+                </div>
+              )}
               <div>
                 <dt>Assigned to</dt>
-                <dd>GreenCycle Ltd</dd>
+                <dd>{success.agent?.name ?? 'GreenCycle Ltd'}</dd>
               </div>
             </dl>
           </div>
@@ -196,7 +230,9 @@ export default function Schedule() {
                   >
                     <CategoryIcon category={c.key} size={46} radius={14} />
                     <strong>{c.name}</strong>
-                    <span style={{ color: c.color }}>{formatNaira(c.rate)}/kg</span>
+                    <span style={{ color: c.color }}>
+                      {formatNaira(area?.rates[c.key] ?? c.rate)}/kg
+                    </span>
                   </button>
                 ))}
               </div>
@@ -252,7 +288,7 @@ export default function Schedule() {
                   </strong>
                   <em>
                     {numWeight > 0
-                      ? `${numWeight} kg × ${formatNaira(active.rate)}/kg`
+                      ? `${numWeight} kg × ${formatNaira(activeRate)}/kg`
                       : 'Enter a weight to see your estimate'}
                   </em>
                 </div>
@@ -324,17 +360,45 @@ export default function Schedule() {
                 ))}
               </div>
 
-              <label className="field address-field">
-                <span>Pickup address</span>
-                <div className="input-wrap">
-                  <MapPin size={17} />
-                  <select value={address} onChange={(e) => setAddress(e.target.value)}>
-                    {addresses.map((a) => (
-                      <option key={a}>{a}</option>
-                    ))}
-                  </select>
-                </div>
-              </label>
+              {apiMode && serviceAreas.length > 0 ? (
+                <>
+                  <label className="field address-field">
+                    <span>Service area</span>
+                    <div className="input-wrap">
+                      <MapPin size={17} />
+                      <select
+                        value={areaKey}
+                        onChange={(e) => {
+                          setAreaKey(e.target.value);
+                          setAddress(AREA_ADDRESS[e.target.value] ?? addresses[0]);
+                        }}
+                      >
+                        {serviceAreas.map((a) => (
+                          <option key={a.key} value={a.key}>
+                            {a.name} — {a.city}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </label>
+                  <p className="weight-note">
+                    <MapPin size={14} /> Pickup at {address}. Rate in {area ? area.name : 'this area'}:{' '}
+                    {formatNaira(activeRate)}/kg for {active?.name.toLowerCase() ?? 'this category'}.
+                  </p>
+                </>
+              ) : (
+                <label className="field address-field">
+                  <span>Pickup address</span>
+                  <div className="input-wrap">
+                    <MapPin size={17} />
+                    <select value={address} onChange={(e) => setAddress(e.target.value)}>
+                      {addresses.map((a) => (
+                        <option key={a}>{a}</option>
+                      ))}
+                    </select>
+                  </div>
+                </label>
+              )}
             </>
           )}
 
@@ -347,7 +411,7 @@ export default function Schedule() {
                 <span>Estimated earnings</span>
                 <strong>{formatNaira(earning)}</strong>
                 <em>
-                  {numWeight} kg × {formatNaira(active.rate)}/kg
+                  {numWeight} kg × {formatNaira(activeRate)}/kg
                 </em>
               </div>
 
@@ -387,6 +451,17 @@ export default function Schedule() {
                   </dt>
                   <dd>{address}</dd>
                 </div>
+                {area && (
+                  <div>
+                    <dt>
+                      <span className="row-icon"><MapPin size={15} /></span>
+                      Service area
+                    </dt>
+                    <dd>
+                      {area.name} · {formatNaira(activeRate)}/kg
+                    </dd>
+                  </div>
+                )}
                 <div>
                   <dt>
                     <span className="row-icon"><CheckCircle2 size={15} /></span>
@@ -428,8 +503,13 @@ export default function Schedule() {
               {step === 1 ? 'Continue to Weight' : step === 2 ? 'Continue' : 'Review'} →
             </button>
           ) : (
-            <button type="button" className="btn btn-primary" onClick={confirm} disabled={!numWeight || !time}>
-              <Check size={17} /> Confirm Pickup
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => void confirm()}
+              disabled={!numWeight || !time || busy}
+            >
+              <Check size={17} /> {busy ? 'Confirming…' : 'Confirm Pickup'}
             </button>
           )}
         </footer>

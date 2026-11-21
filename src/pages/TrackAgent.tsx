@@ -7,11 +7,14 @@ import {
   Mail,
   MapPin,
   Phone,
+  RefreshCw,
   Star,
   Truck,
 } from 'lucide-react';
 import { useToast } from '../components/ui';
 import { useApp } from '../store';
+import { categoryMap, formatNaira } from '../data';
+import type { Collection } from '../types';
 
 const stages = [
   { title: 'Assigned', text: 'Agent assigned to your pickup' },
@@ -21,13 +24,37 @@ const stages = [
   { title: 'Completed', text: 'Pickup complete. Payment pending' },
 ];
 
+const stageByStatus: Record<Collection['status'], number> = {
+  upcoming: 0,
+  assigned: 0,
+  en_route: 1,
+  arrived: 3,
+  completed: 4,
+  cancelled: 0,
+};
+
+const activeStatuses: Collection['status'][] = ['upcoming', 'assigned', 'en_route', 'arrived'];
+
 export default function TrackAgent() {
-  const [stage, setStage] = useState(2);
+  const [demoStage, setDemoStage] = useState(2);
   const { show } = useToast();
   const navigate = useNavigate();
-  const { collections } = useApp();
-  const active = collections.find((c) => c.status === 'upcoming');
+  const { collections, apiMode, refreshState } = useApp();
+  const active = collections.find((c) => activeStatuses.includes(c.status));
+  const stage = apiMode && active ? stageByStatus[active.status] : demoStage;
   const done = stage === 4;
+  const agentName = active?.agent?.name ?? (apiMode ? 'Assigning your agent…' : 'Chukwuma Okafor');
+  const agentPhone = active?.agent?.phone ?? '';
+  const categoryName = active ? categoryMap[active.category].name : 'Plastic';
+  const kg = active ? active.confirmedWeight ?? active.weight : 4.5;
+  const earn = active ? active.earning ?? 0 : 360;
+  const statusText = done
+    ? 'Collection complete'
+    : stage >= 2
+      ? 'En route to you'
+      : active?.status === 'upcoming'
+        ? 'Waiting for an agent'
+        : 'Preparing your pickup';
 
   if (!active) {
     return (
@@ -80,13 +107,17 @@ export default function TrackAgent() {
         </button>
         <div>
           <h1>Track Your Agent</h1>
-          <p>GreenCycle Ltd · Chukwuma O.</p>
+          <p>
+            {active.company} · {agentName}
+          </p>
         </div>
         <button
           type="button"
           className="agent-call"
           aria-label="Call agent"
-          onClick={() => show('Calling Chukwuma on +234 803 555 0112…')}
+          onClick={() =>
+            show(agentPhone ? `Calling ${agentName} on ${agentPhone}…` : 'Your agent will be assigned shortly.')
+          }
         >
           <Phone size={18} />
         </button>
@@ -114,25 +145,32 @@ export default function TrackAgent() {
         </span>
         <span className="eta-chip">
           <span>ETA</span>
-          <strong>{done ? 'Now' : `${stage === 2 ? 5 : 8} min`}</strong>
+          <strong>
+            {active.status === 'upcoming' ? '—' : done ? 'Now' : `${stage === 2 ? 5 : 8} min`}
+          </strong>
         </span>
       </section>
 
       <section className="card agent-card">
         <div className="agent-top">
-          <span className="agent-avatar">C</span>
+          <span className="agent-avatar">{agentName.charAt(0)}</span>
           <div className="agent-copy">
-            <strong>Chukwuma Okafor</strong>
+            <strong>{agentName}</strong>
             <span>
-              GreenCycle Ltd · <Star size={13} fill="#F5A623" stroke="#F5A623" /> 4.9 (312 pickups)
+              {active.company}
+              {active.agent && (
+                <>
+                  {' '}
+                  · <Star size={13} fill="#F5A623" stroke="#F5A623" /> 4.9 (312 pickups)
+                </>
+              )}
             </span>
             <em>
-              <i className={`status-dot ${done ? 'done' : ''}`} />{' '}
-              {done ? 'Collection complete' : stage >= 2 ? 'En route to you' : 'Preparing your pickup'}
+              <i className={`status-dot ${done ? 'done' : ''}`} /> {statusText}
             </em>
           </div>
           <div className="agent-actions">
-            <button type="button" aria-label="Call" onClick={() => show('Calling Chukwuma…')}>
+            <button type="button" aria-label="Call" onClick={() => show(agentPhone ? `Calling ${agentName}…` : 'No agent number yet.')}>
               <Phone size={17} />
             </button>
             <button type="button" aria-label="Message" onClick={() => show('Message thread opened.')}>
@@ -143,12 +181,12 @@ export default function TrackAgent() {
 
         <div className="agent-details">
           {[
-            ['Waste Type', 'Plastic'],
-            ['Weight', '4.5 kg'],
-            ['Est. Earn', '₦360'],
-            ['Time Slot', '2:00 PM'],
-            ['Address', '12 Okota Rd'],
-            ['Pickup ID', '#PC-8821'],
+            ['Waste Type', categoryName],
+            ['Weight', `${kg} kg${active.confirmedWeight ? ' confirmed' : ' est.'}`],
+            ['Est. Earn', formatNaira(earn)],
+            ['Time Slot', active.time],
+            ['Address', active.address],
+            ['Pickup ID', active.pickupId ?? '—'],
           ].map(([label, value]) => (
             <div key={label}>
               <span>{label}</span>
@@ -172,8 +210,12 @@ export default function TrackAgent() {
                   {state === 'done' ? <Check size={14} strokeWidth={3} /> : i === 4 ? <Check size={13} /> : <i />}
                 </span>
                 <div className="tl-copy">
-                  <strong>{s.title}</strong>
-                  <span>{s.text}</span>
+                  <strong>{i === 0 && active.status === 'upcoming' ? 'Matching agent' : s.title}</strong>
+                  <span>
+                    {i === 0 && active.status === 'upcoming'
+                      ? 'We are matching you with a nearby agent'
+                      : s.text}
+                  </span>
                   {state === 'current' && !done && <em>In progress…</em>}
                   {state === 'current' && done && <em>Completed</em>}
                 </div>
@@ -183,25 +225,33 @@ export default function TrackAgent() {
           })}
         </ol>
         <div className="agent-foot">
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={() => setStage((s) => Math.max(0, s - 1))}
-            disabled={stage === 0}
-          >
-            <ChevronLeft size={16} /> Previous Stage
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => {
-              setStage((s) => Math.min(4, s + 1));
-              if (stage === 3) show('Pickup verified — payment will be processed.');
-            }}
-            disabled={done}
-          >
-            Next Stage <ChevronRight size={16} />
-          </button>
+          {apiMode ? (
+            <button type="button" className="btn btn-outline" onClick={() => void refreshState()}>
+              <RefreshCw size={16} /> Refresh status
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setDemoStage((s) => Math.max(0, s - 1))}
+                disabled={demoStage === 0}
+              >
+                <ChevronLeft size={16} /> Previous Stage
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setDemoStage((s) => Math.min(4, s + 1));
+                  if (demoStage === 3) show('Pickup verified — payment will be processed.');
+                }}
+                disabled={done}
+              >
+                Next Stage <ChevronRight size={16} />
+              </button>
+            </>
+          )}
         </div>
       </section>
     </div>
