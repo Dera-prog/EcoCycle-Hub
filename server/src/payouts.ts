@@ -101,6 +101,48 @@ interface PayoutWithBank extends PayoutRow {
 }
 
 /**
+ * A bank can reverse a transfer after it was marked paid. The money leaves
+ * the platform's bank account and returns to the customer's wallet.
+ */
+export async function reversePayout(
+  client: PoolClient,
+  payout: PayoutRow,
+  reason: string,
+): Promise<boolean> {
+  if (payout.status !== 'paid') return false;
+
+  const amount = Number(payout.amount);
+  const bank = await platformAccount(client, 'platform_bank');
+  const { wallet } = await userAccounts(client, payout.user_id);
+  await postLedger(
+    client,
+    { type: 'payout_reversal', id: payout.id, memo: `Payout ${payout.id} reversed` },
+    [
+      { accountId: bank, direction: 'debit', amount },
+      { accountId: wallet, direction: 'credit', amount },
+    ],
+  );
+
+  await client.query(
+    `UPDATE payouts SET status = 'failed', failure_reason = $1, updated_at = now() WHERE id = $2`,
+    [reason, payout.id],
+  );
+  await client.query('UPDATE payments SET status = $1 WHERE id = $2', ['Failed', payoutPaymentId(payout.id)]);
+
+  const customer = await client.query<{ phone: string }>('SELECT phone FROM users WHERE id = $1', [payout.user_id]);
+  const money = `₦${amount.toLocaleString('en-NG')}`;
+  await notifyCustomer(client, {
+    userId: payout.user_id,
+    phone: customer.rows[0]?.phone ?? '',
+    title: 'Withdrawal reversed',
+    body: `${money} was reversed by your bank and returned to your balance.`,
+    sms: `EcoCycle: your ${money} payout was reversed and is back in your balance.`,
+  });
+
+  return true;
+}
+
+/**
  * Hands a held payout to the provider. Success moves it to processing; a
  * provider rejection closes it as failed and refunds the wallet.
  */

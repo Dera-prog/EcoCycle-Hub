@@ -121,7 +121,8 @@ test('a pickup is stored with the computed earning', async () => {
   };
   assert.equal(payload.collection.earning, 400);
   assert.match(payload.collection.pickupId, /^#PC-[0-9A-F]{6}$/);
-  assert.equal(payload.state.monthKg, 5);
+  // Volume is only counted once an agent confirms the weight.
+  assert.equal(payload.state.monthKg, 0);
   assert.equal(payload.state.collections.length, 1);
 
   const invalid = await app.inject({
@@ -401,10 +402,14 @@ test('only the assigned agent can progress a pickup, and the agent confirms the 
   });
   const state = json(me).state as {
     pending: number;
+    monthKg: number;
+    totalEarned: number;
     collections: Array<{ id: string; status: string }>;
     payments: Array<{ amount: number; status: string }>;
   };
   assert.equal(state.pending, 324);
+  assert.equal(state.monthKg, 3);
+  assert.equal(state.totalEarned, 324);
   assert.equal(state.collections.find((c) => c.id === pickupId)?.status, 'completed');
   assert.equal(state.payments[0].amount, 324);
   assert.equal(state.payments[0].status, 'Pending');
@@ -625,6 +630,63 @@ test('withdrawals are held as payouts, settle idempotently and refund on failure
     headers: { authorization: `Bearer ${amaka.body.token}` },
   });
   assert.equal((json(reheld).state as { balance: number }).balance, 42200);
+  assert.equal(await ledgerDifference(), 0);
+});
+
+test('a bank reversal returns a paid payout to the wallet', async () => {
+  const { reversePayout } = await import('../src/payouts.js');
+  const paid = await pool.query<{ id: string }>(
+    `SELECT po.id FROM payouts po JOIN users u ON u.id = po.user_id
+     WHERE u.email = 'test@ecocycle.ng' AND po.status = 'paid'
+     ORDER BY po.created_at DESC LIMIT 1`,
+  );
+  assert.ok(paid.rows[0]);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = await client.query('SELECT * FROM payouts WHERE id = $1 FOR UPDATE', [paid.rows[0].id]);
+    assert.equal(await reversePayout(client, row.rows[0], 'Reversed by bank'), true);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const customer = await signIn('test@ecocycle.ng', 'secret123');
+  const me = await app.inject({
+    method: 'GET',
+    url: '/api/me',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  const state = json(me).state as { balance: number; payments: Array<{ id: string; status: string }> };
+  assert.equal(state.balance, 324);
+  assert.equal(state.payments.find((p) => p.id === `pay-${paid.rows[0].id}`)?.status, 'Failed');
+  assert.equal(await ledgerDifference(), 0);
+});
+
+test('withdrawal idempotency keys are scoped per customer', async () => {
+  const recycler = await signIn('test@ecocycle.ng', 'secret123');
+  const amaka = await signIn('amaka@gmail.com', 'demo1234');
+
+  const withdraw = (token: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/wallet/withdraw',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { amount: 100, requestKey: 'shared-key' },
+    });
+
+  const first = await withdraw(recycler.body.token as string);
+  assert.equal(first.statusCode, 200);
+  assert.equal((json(first).state as { balance: number }).balance, 224);
+
+  // A different customer using the same key must still be able to withdraw.
+  const second = await withdraw(amaka.body.token as string);
+  assert.equal(second.statusCode, 200);
+  assert.equal((json(second).state as { balance: number }).balance, 42100);
   assert.equal(await ledgerDifference(), 0);
 });
 

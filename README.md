@@ -79,7 +79,7 @@ Click **Sign In** or **Create Account** — those are the only two doors into th
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173 (demo mode)
+npm run dev        # http://localhost:5180 (demo mode)
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build
 ```
@@ -235,7 +235,7 @@ npm run migrate:dev     # apply pending migrations against DATABASE_URL (tsx, no
 npm run migrate:down    # roll back the most recent migration
 ```
 
-To add a migration, create `server/migrations/0005_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
+To add a migration, create `server/migrations/0006_<name>.sql` with `-- Up Migration` and `-- Down Migration` sections. Applied migrations are recorded in the `pgmigrations` table, so restarts are no-ops ("No migrations to run!"). The seed (`server/src/seed.ts`) only runs when `SEED_DEMO=true` and the `users` table is empty — it is refused outright when `NODE_ENV=production`.
 
 ## API tests
 
@@ -244,7 +244,7 @@ The suite uses Node's built-in test runner against a real PostgreSQL database (n
 ```bash
 cd server
 npm run typecheck                 # tsc --noEmit across src and test
-npm test                          # 17 end-to-end API tests
+npm test                          # 19 end-to-end API tests
 ```
 
 With the Docker stack running, the defaults already point at it. Otherwise set `TEST_ADMIN_URL` (a connection to the `postgres` database, used to create `ecocycle_test`) and `TEST_DATABASE_URL`.
@@ -324,7 +324,7 @@ Run a second API instance against it on its own port:
 
 ```bash
 PORT=4002 DATABASE_URL=$STAGING_URL JWT_SECRET=local-dev-secret-change-me-32chars \
-  SEED_DEMO=true CORS_ORIGIN=http://localhost:5173 npm run dev
+  SEED_DEMO=true CORS_ORIGIN=http://localhost:5180 npm run dev
 curl http://localhost:4002/api/health
 ```
 

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { pool } from '../db.js';
 import { verifyPaystackSignature } from '../payments.js';
-import { settlePayout, type PayoutRow } from '../payouts.js';
+import { settlePayout, reversePayout, type PayoutRow } from '../payouts.js';
 
 interface PaystackEvent {
   id?: unknown;
@@ -60,7 +60,11 @@ export default async function paymentRoutes(app: FastifyInstance) {
         await client.query('UPDATE payment_events SET payout_id = $1 WHERE id = $2', [found.rows[0].id, seen.rows[0].id]);
         const outcome = eventType === 'transfer.success' ? 'paid' : 'failed';
         const reason = outcome === 'failed' ? String(event.data?.gateway_response ?? eventType) : undefined;
-        await settlePayout(client, found.rows[0], outcome, reason);
+        if (eventType === 'transfer.reversed' && found.rows[0].status === 'paid') {
+          await reversePayout(client, found.rows[0], reason ?? 'Transfer reversed');
+        } else {
+          await settlePayout(client, found.rows[0], outcome, reason);
+        }
       }
       await client.query('COMMIT');
     } catch (error) {

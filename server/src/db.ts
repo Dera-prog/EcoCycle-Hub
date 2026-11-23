@@ -82,7 +82,7 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
       [userId],
     ),
     pool.query(
-      `SELECT p.id, p.company, p.date_label, p.weight, p.amount, p.status, po.failure_reason
+      `SELECT p.id, p.company, p.date_label, p.weight, p.amount, p.status, p.created_at, po.failure_reason
        FROM payments p
        LEFT JOIN payouts po ON 'pay-' || po.id = p.id
        WHERE p.user_id = $1 ORDER BY p.created_at DESC`,
@@ -132,6 +132,7 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
       weight: r.weight === null ? null : Number(r.weight),
       amount: r.amount,
       status: r.status,
+      createdAt: r.created_at,
       ...(r.failure_reason ? { failureReason: r.failure_reason } : {}),
     })),
     bank: bank.rows[0]

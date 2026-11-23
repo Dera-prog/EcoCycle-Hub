@@ -15,7 +15,7 @@ import { useApp } from '../store';
 import { formatNaira } from '../data';
 import type { Payment } from '../types';
 
-type Period = 'All time' | '2024' | '2023';
+type Period = string;
 const quickAmounts = [5000, 10000, 20000];
 const badgeClass: Record<Payment['status'], string> = {
   Paid: 'badge-paid',
@@ -23,6 +23,37 @@ const badgeClass: Record<Payment['status'], string> = {
   Processing: 'badge-processing',
   Failed: 'badge-failed',
 };
+
+// Paystack transfer codes for the major Nigerian banks.
+const NIGERIAN_BANKS = [
+  { name: 'Access Bank', code: '044' },
+  { name: 'Ecobank', code: '050' },
+  { name: 'Fidelity Bank', code: '070' },
+  { name: 'First Bank of Nigeria', code: '011' },
+  { name: 'First City Monument Bank', code: '214' },
+  { name: 'Guaranty Trust Bank', code: '058' },
+  { name: 'Kuda Bank', code: '50211' },
+  { name: 'Moniepoint MFB', code: '50515' },
+  { name: 'OPay', code: '999992' },
+  { name: 'PalmPay', code: '999991' },
+  { name: 'Polaris Bank', code: '076' },
+  { name: 'Providus Bank', code: '101' },
+  { name: 'Stanbic IBTC Bank', code: '221' },
+  { name: 'Sterling Bank', code: '232' },
+  { name: 'Union Bank of Nigeria', code: '032' },
+  { name: 'United Bank for Africa', code: '033' },
+  { name: 'Wema Bank', code: '035' },
+  { name: 'Zenith Bank', code: '057' },
+];
+
+function paymentYear(p: Payment): number | null {
+  if (p.createdAt) {
+    const d = new Date(p.createdAt);
+    if (!Number.isNaN(d.getTime())) return d.getFullYear();
+  }
+  const match = p.dateLabel.match(/\b(20\d{2})\b/);
+  return match ? Number(match[1]) : null;
+}
 
 export default function Wallet() {
   const { balance, pending, payments, bank, withdraw, updateBank, totalEarned, persona, apiMode } = useApp();
@@ -33,6 +64,9 @@ export default function Wallet() {
   const [bankOpen, setBankOpen] = useState(false);
   const [bankName, setBankName] = useState(bank.name);
   const [last4, setLast4] = useState(bank.last4);
+  const [bankCode, setBankCode] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [accountName, setAccountName] = useState('');
   const [period, setPeriod] = useState<Period>('All time');
   const [submitting, setSubmitting] = useState(false);
   const [withdrawError, setWithdrawError] = useState('');
@@ -42,13 +76,51 @@ export default function Wallet() {
   const value = Number(amount) || 0;
   const valid = value > 0 && value <= balance;
 
+  const years = useMemo(() => {
+    const found = new Set<number>();
+    payments.forEach((p) => {
+      const year = paymentYear(p);
+      if (year) found.add(year);
+    });
+    return Array.from(found).sort((a, b) => b - a);
+  }, [payments]);
+
   const history = useMemo(() => {
     if (period === 'All time') return payments;
-    if (period === '2023') return [];
-    return payments.filter(
-      (p) => p.dateLabel.includes('2024') || p.status === 'Pending' || p.status === 'Processing' || p.status === 'Failed',
-    );
+    const year = Number(period);
+    return payments.filter((p) => {
+      const found = paymentYear(p);
+      return found === null || found === year;
+    });
   }, [payments, period]);
+
+  // The marketing persona keeps its designed demo figures; live accounts show
+  // figures derived from their own payment rows.
+  const stats = useMemo(() => {
+    if (!apiMode && persona === 'returning') return { quarter: 25300, avg: 4017 };
+    const now = new Date();
+    const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+    let quarter = 0;
+    const months = new Set<string>();
+    for (const p of payments) {
+      if (p.company === 'Bank withdrawal' || !p.createdAt) continue;
+      const d = new Date(p.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      if (d >= quarterStart) quarter += p.amount;
+      months.add(`${d.getFullYear()}-${d.getMonth()}`);
+    }
+    return { quarter, avg: months.size > 0 ? Math.round(totalEarned / months.size) : 0 };
+  }, [apiMode, persona, payments, totalEarned]);
+
+  const openBank = () => {
+    setBankName(linked ? bank.name : '');
+    setLast4(linked ? bank.last4 : '');
+    setBankCode(NIGERIAN_BANKS.find((b) => b.name === bank.name)?.code ?? '');
+    setAccountNumber('');
+    setAccountName('');
+    setBankError('');
+    setBankOpen(true);
+  };
 
   const resetWithdraw = () => {
     setOpen(false);
@@ -74,13 +146,36 @@ export default function Wallet() {
 
   const saveBank = async () => {
     setBankError('');
-    const res = await updateBank({
-      name: bankName || bank.name,
-      last4: last4.replace(/\D/g, '').slice(-4) || bank.last4,
-    });
-    if (!res.ok) {
-      setBankError(res.error ?? 'Could not update your payout account.');
-      return;
+    if (apiMode) {
+      const digits = accountNumber.replace(/\D/g, '');
+      if (!bankName || !bankCode) {
+        setBankError('Choose your bank.');
+        return;
+      }
+      if (digits.length !== 10) {
+        setBankError('Enter the 10-digit account number.');
+        return;
+      }
+      const res = await updateBank({
+        name: bankName,
+        last4: digits.slice(-4),
+        accountNumber: digits,
+        bankCode,
+        accountName: accountName.trim(),
+      });
+      if (!res.ok) {
+        setBankError(res.error ?? 'Could not update your payout account.');
+        return;
+      }
+    } else {
+      const res = await updateBank({
+        name: bankName || bank.name,
+        last4: last4.replace(/\D/g, '').slice(-4) || bank.last4,
+      });
+      if (!res.ok) {
+        setBankError(res.error ?? 'Could not update your payout account.');
+        return;
+      }
     }
     setBankOpen(false);
     show('Payout account updated.');
@@ -141,11 +236,11 @@ export default function Wallet() {
         </article>
         <article>
           <span>This Quarter</span>
-          <strong className="blue">{formatNaira(persona === 'returning' ? 25300 : totalEarned)}</strong>
+          <strong className="blue">{formatNaira(stats.quarter)}</strong>
         </article>
         <article>
           <span>Avg/Month</span>
-          <strong className="amber">{formatNaira(persona === 'returning' ? 4017 : 0)}</strong>
+          <strong className="amber">{formatNaira(stats.avg)}</strong>
         </article>
       </div>
 
@@ -153,7 +248,7 @@ export default function Wallet() {
         <header>
           <h2>Linked Bank Account</h2>
           {linked && (
-            <button type="button" className="link-btn" onClick={() => setBankOpen(true)}>
+            <button type="button" className="link-btn" onClick={openBank}>
               Change
             </button>
           )}
@@ -169,7 +264,7 @@ export default function Wallet() {
           {linked ? (
             <span className="bank-default">Default</span>
           ) : (
-            <button type="button" className="link-btn" onClick={() => setBankOpen(true)}>
+            <button type="button" className="link-btn" onClick={openBank}>
               Add
             </button>
           )}
@@ -181,8 +276,8 @@ export default function Wallet() {
           <h2>Payment History</h2>
           <label className="select-mini">
             <span className="sr-only">Filter payment history</span>
-            <select value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
-              {(['All time', '2024', '2023'] as Period[]).map((p) => (
+            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
+              {['All time', ...years.map(String)].map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </select>
@@ -301,7 +396,7 @@ export default function Wallet() {
                 <strong>{bank.name}</strong>
                 <span>•••• •••• {bank.last4}</span>
               </div>
-              <button type="button" className="link-btn" onClick={() => setBankOpen(true)}>
+              <button type="button" className="link-btn" onClick={openBank}>
                 Change
               </button>
             </div>
@@ -328,7 +423,7 @@ export default function Wallet() {
               </div>
               <div>
                 <dt>Arrival</dt>
-                <dd>Within 24 hours</dd>
+                <dd>{apiMode ? 'When your bank confirms' : 'Within 24 hours'}</dd>
               </div>
             </dl>
             {withdrawError && (
@@ -371,28 +466,84 @@ export default function Wallet() {
         }
       >
         <div className="modal-form">
-          <label className="field">
-            <span>Bank name</span>
-            <div className="input-wrap">
-              <Landmark size={17} />
-              <input value={bankName} onChange={(e) => setBankName(e.target.value)} />
-            </div>
-          </label>
-          <label className="field">
-            <span>Account number (last 4 shown)</span>
-            <div className="input-wrap">
-              <input
-                value={last4}
-                onChange={(e) => setLast4(e.target.value)}
-                inputMode="numeric"
-                maxLength={4}
-                placeholder="4721"
-              />
-            </div>
-          </label>
-          <p className="modal-copy">
-            For your security, the full account number is never displayed after it is saved.
-          </p>
+          {apiMode ? (
+            <>
+              <label className="field">
+                <span>Bank</span>
+                <div className="input-wrap">
+                  <Landmark size={17} />
+                  <select
+                    value={bankCode}
+                    onChange={(e) => {
+                      const choice = NIGERIAN_BANKS.find((b) => b.code === e.target.value);
+                      setBankCode(e.target.value);
+                      setBankName(choice?.name ?? '');
+                    }}
+                    aria-label="Bank"
+                  >
+                    <option value="">Choose your bank</option>
+                    {NIGERIAN_BANKS.map((b) => (
+                      <option key={b.code} value={b.code}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </label>
+              <label className="field">
+                <span>Account number</span>
+                <div className="input-wrap">
+                  <input
+                    value={accountNumber}
+                    onChange={(e) => setAccountNumber(e.target.value.replace(/\D/g, ''))}
+                    inputMode="numeric"
+                    maxLength={10}
+                    placeholder="0123456789"
+                    aria-label="Account number"
+                  />
+                </div>
+              </label>
+              <label className="field">
+                <span>Account name</span>
+                <div className="input-wrap">
+                  <input
+                    value={accountName}
+                    onChange={(e) => setAccountName(e.target.value)}
+                    placeholder="As it appears on your bank account"
+                    aria-label="Account name"
+                  />
+                </div>
+              </label>
+              <p className="modal-copy">
+                Payouts are sent to this account. Only the last 4 digits are shown after it is saved.
+              </p>
+            </>
+          ) : (
+            <>
+              <label className="field">
+                <span>Bank name</span>
+                <div className="input-wrap">
+                  <Landmark size={17} />
+                  <input value={bankName} onChange={(e) => setBankName(e.target.value)} />
+                </div>
+              </label>
+              <label className="field">
+                <span>Account number (last 4 shown)</span>
+                <div className="input-wrap">
+                  <input
+                    value={last4}
+                    onChange={(e) => setLast4(e.target.value)}
+                    inputMode="numeric"
+                    maxLength={4}
+                    placeholder="4721"
+                  />
+                </div>
+              </label>
+              <p className="modal-copy">
+                For your security, the full account number is never displayed after it is saved.
+              </p>
+            </>
+          )}
           {bankError && (
             <p className="form-error" role="alert">
               {bankError}

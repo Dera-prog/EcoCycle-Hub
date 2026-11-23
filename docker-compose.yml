@@ -23,7 +23,7 @@ services:
       NODE_ENV: development
       DATABASE_URL: postgres://ecocycle:ecocycle@db:5432/ecocycle
       JWT_SECRET: local-dev-secret-change-me-32chars
-      CORS_ORIGIN: http://localhost:5173
+      CORS_ORIGIN: http://localhost:5173,http://localhost:5180
       SEED_DEMO: 'true'
       PORT: '4000'
     ports:

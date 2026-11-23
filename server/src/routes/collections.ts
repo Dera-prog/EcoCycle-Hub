@@ -92,9 +92,12 @@ export default async function collectionRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Body: PickupBody }>('/api/collections', { preHandler: requireAuth }, async (request, reply) => {
-    const { category, dateLabel, time, address } = request.body;
-    const weight = Number(request.body.weight ?? 0);
-    const area = (request.body.area ?? DEFAULT_AREA).trim();
+    const category = request.body?.category;
+    const dateLabel = String(request.body?.dateLabel ?? '').trim();
+    const time = String(request.body?.time ?? '').trim();
+    const address = String(request.body?.address ?? '').trim();
+    const weight = Number(request.body?.weight ?? 0);
+    const area = String(request.body?.area ?? DEFAULT_AREA).trim();
 
     if (!category) return reply.code(400).send({ error: 'Choose a waste category.' });
     if (!(weight > 0) || weight > 500) {
@@ -102,6 +105,9 @@ export default async function collectionRoutes(app: FastifyInstance) {
     }
     if (!time) return reply.code(400).send({ error: 'Choose a time slot.' });
     if (!dateLabel) return reply.code(400).send({ error: 'Choose a collection date.' });
+    if (dateLabel.length > 40 || time.length > 20 || address.length > 200) {
+      return reply.code(400).send({ error: 'That pickup details are too long.' });
+    }
 
     const cat = await pool.query('SELECT rate FROM categories WHERE key = $1', [category]);
     if (cat.rowCount === 0) return reply.code(400).send({ error: 'Unknown waste category.' });
@@ -119,7 +125,7 @@ export default async function collectionRoutes(app: FastifyInstance) {
     const id = randomUUID();
     const pickupId = `#PC-${id.slice(0, 6).toUpperCase()}`;
     const company = 'GreenCycle Ltd';
-    const place = address ?? '12 Okota Road, Lagos';
+    const place = address || '12 Okota Road, Lagos';
 
     const client = await pool.connect();
     try {
@@ -131,7 +137,8 @@ export default async function collectionRoutes(app: FastifyInstance) {
         [id, userId, category, company, dateLabel, time, weight, place, earning, pickupId, area, rate],
       );
       if (insert.rowCount === 0) throw new Error('insert failed');
-      await client.query('UPDATE users SET month_kg = month_kg + $1 WHERE id = $2', [Math.round(weight), userId]);
+      // Recycled volume is counted when an agent confirms the weight, not at
+      // booking, so cancelled pickups never inflate the monthly total.
       await client.query(
         `INSERT INTO pickup_events (collection_id, from_status, to_status, actor_id, actor_role, note)
          VALUES ($1, NULL, 'upcoming', $2, 'customer', 'Pickup requested')`,
@@ -163,7 +170,9 @@ export default async function collectionRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const userId = request.userId!;
       const { id } = request.params;
-      const { action, dateLabel, time } = request.body;
+      const action = request.body?.action;
+      const dateLabel = String(request.body?.dateLabel ?? '').trim();
+      const time = String(request.body?.time ?? '').trim();
 
       if (action === 'cancel') {
         return cancelPickup(reply, id, userId);
@@ -172,6 +181,9 @@ export default async function collectionRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: 'Unknown action.' });
       }
       if (!dateLabel || !time) return reply.code(400).send({ error: 'Choose a new date and time.' });
+      if (dateLabel.length > 40 || time.length > 20) {
+        return reply.code(400).send({ error: 'That pickup details are too long.' });
+      }
 
       const client = await pool.connect();
       try {
