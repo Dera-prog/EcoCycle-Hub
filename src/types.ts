@@ -89,6 +89,7 @@ export interface Payment {
   amount: number;
   status: 'Pending' | 'Processing' | 'Paid' | 'Failed';
   failureReason?: string;
+  createdAt?: string;
 }
 
 export type PayoutStatus = 'pending' | 'processing' | 'paid' | 'failed';
@@ -115,6 +116,9 @@ export interface PendingEarning {
 export interface BankAccount {
   name: string;
   last4: string;
+  accountNumber?: string;
+  bankCode?: string;
+  accountName?: string;
 }
 
 export interface PickupInput {

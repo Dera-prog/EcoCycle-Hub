@@ -107,7 +107,7 @@ export default async function opsRoutes(app: FastifyInstance) {
     '/api/ops/pickups/:id/assign',
     { preHandler: requireRole('admin') },
     async (request, reply) => {
-      const agent = await findUserById(request.body.agentId ?? '');
+      const agent = await findUserById(request.body?.agentId ?? '');
       if (!agent || agent.role !== 'agent') {
         return reply.code(400).send({ error: 'Choose a field agent to assign.' });
       }
@@ -164,7 +164,8 @@ export default async function opsRoutes(app: FastifyInstance) {
     '/api/ops/pickups/:id/transition',
     { preHandler: requireRole('agent', 'admin') },
     async (request, reply) => {
-      const action = request.body.action as AgentAction;
+      const body = request.body ?? {};
+      const action = body.action as AgentAction;
       if (!ACTIONS.includes(action)) {
         return reply.code(400).send({ error: 'Unknown lifecycle action.' });
       }
@@ -199,7 +200,7 @@ export default async function opsRoutes(app: FastifyInstance) {
         let confirmed: number | null = null;
 
         if (action === 'complete') {
-          confirmed = Number(request.body.weight ?? 0);
+          confirmed = Number(body.weight ?? 0);
           if (!(confirmed > 0) || confirmed > 500) {
             await client.query('ROLLBACK');
             return reply.code(400).send({ error: 'Enter the confirmed weight between 0 and 500 kg.' });
@@ -243,13 +244,14 @@ export default async function opsRoutes(app: FastifyInstance) {
             ],
           );
           await client.query(
-            `UPDATE users SET month_kg = GREATEST(0, month_kg + $1), total_recycled = total_recycled + $2
+            `UPDATE users SET month_kg = month_kg + $1, total_recycled = total_recycled + $1,
+               total_earned = total_earned + $2
              WHERE id = $3`,
-            [Math.round(confirmed! - Number(pickup.weight)), Math.round(confirmed!), pickup.customer_id],
+            [Math.round(confirmed!), earning!, pickup.customer_id],
           );
           await client.query(
             `INSERT INTO payments (id, user_id, company, date_label, weight, amount, status)
-             VALUES ($1, $2, 'GreenCycle Ltd', 'Pending', $3, $4, 'Pending')`,
+             VALUES ($1, $2, 'GreenCycle Ltd', 'Today', $3, $4, 'Pending')`,
             [`pay-${pickup.id}-${Date.now()}`, pickup.customer_id, confirmed, earning],
           );
         } else {
@@ -276,8 +278,8 @@ export default async function opsRoutes(app: FastifyInstance) {
             },
             complete: {
               title: 'Pickup complete',
-              body: `${confirmed} kg confirmed. ₦${(earning ?? 0).toLocaleString('en-NG')} will be paid within 24 hours.`,
-              sms: `EcoCycle: pickup complete, ${confirmed} kg confirmed. Payment of N${(earning ?? 0).toLocaleString('en-NG')} is pending.`,
+              body: `${confirmed} kg confirmed. ₦${(earning ?? 0).toLocaleString('en-NG')} is pending and will move to your balance once the batch is verified.`,
+              sms: `EcoCycle: pickup complete, ${confirmed} kg confirmed. N${(earning ?? 0).toLocaleString('en-NG')} is pending release.`,
             },
           };
           const message = messages[action];
@@ -373,7 +375,7 @@ export default async function opsRoutes(app: FastifyInstance) {
       if (config.paymentsProvider !== 'console') {
         return reply.code(409).send({ error: 'Payouts settle through the provider webhook.' });
       }
-      const outcome = request.body.outcome === 'failed' ? 'failed' : 'paid';
+      const outcome = request.body?.outcome === 'failed' ? 'failed' : 'paid';
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -384,7 +386,7 @@ export default async function opsRoutes(app: FastifyInstance) {
           await client.query('ROLLBACK');
           return reply.code(404).send({ error: 'Payout not found.' });
         }
-        const settled = await settlePayout(client, found.rows[0], outcome, request.body.reason);
+        const settled = await settlePayout(client, found.rows[0], outcome, request.body?.reason);
         if (!settled) {
           await client.query('ROLLBACK');
           return reply.code(409).send({ error: 'Only an open payout can be confirmed.' });
@@ -468,7 +470,10 @@ export default async function opsRoutes(app: FastifyInstance) {
     '/api/ops/customers/:id/settle',
     { preHandler: requireRole('admin') },
     async (request, reply) => {
-      const requested = Math.round(Number(request.body.amount ?? 0));
+      const requested = Math.round(Number(request.body?.amount ?? 0));
+      if (!Number.isFinite(requested) || requested < 0) {
+        return reply.code(400).send({ error: 'Enter a valid amount to release.' });
+      }
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -503,11 +508,15 @@ export default async function opsRoutes(app: FastifyInstance) {
             { accountId: accounts.wallet, direction: 'credit', amount },
           ],
         );
-        await client.query(
-          `UPDATE payments SET status = 'Paid'
-           WHERE user_id = $1 AND status = 'Pending' AND company <> 'Bank withdrawal'`,
-          [customer.id],
-        );
+        // Partial releases leave the remaining earnings pending, so the
+        // payment rows only flip to Paid once the whole balance is cleared.
+        if (amount === balances.pending) {
+          await client.query(
+            `UPDATE payments SET status = 'Paid'
+             WHERE user_id = $1 AND status = 'Pending' AND company <> 'Bank withdrawal'`,
+            [customer.id],
+          );
+        }
         await notifyCustomer(client, {
           userId: customer.id,
           phone: customer.phone,

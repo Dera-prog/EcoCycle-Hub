@@ -69,8 +69,8 @@ interface AppContextValue extends AppState {
   retryPayout: (id: string) => Promise<ActionResult>;
   settleEarnings: (userId: string) => Promise<ActionResult>;
   addPickup: (input: PickupInput) => Promise<Collection | null>;
-  cancelCollection: (id: string) => void;
-  rescheduleCollection: (id: string, dateLabel: string, time: string) => void;
+  cancelCollection: (id: string) => Promise<ActionResult>;
+  rescheduleCollection: (id: string, dateLabel: string, time: string) => Promise<ActionResult>;
   withdraw: (amount: number) => Promise<ActionResult>;
   markAllRead: () => void;
   updateBank: (bank: BankAccount) => Promise<ActionResult>;
@@ -343,24 +343,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const cancelCollection = useCallback(
-    (id: string) => {
+    async (id: string): Promise<ActionResult> => {
       if (apiMode) {
-        void api(`/api/collections/${id}`, { method: 'DELETE' }).then(applyState);
-        return;
+        const res = await api(`/api/collections/${id}`, { method: 'DELETE' });
+        if (!res.ok) return { ok: false, error: res.error };
+        applyState(res);
+        return { ok: true };
       }
       setState((s) => ({ ...s, collections: s.collections.filter((c) => c.id !== id) }));
+      return { ok: true };
     },
     [apiMode],
   );
 
   const rescheduleCollection = useCallback(
-    (id: string, dateLabel: string, time: string) => {
+    async (id: string, dateLabel: string, time: string): Promise<ActionResult> => {
       if (apiMode) {
-        void api(`/api/collections/${id}`, {
+        const res = await api(`/api/collections/${id}`, {
           method: 'PATCH',
           body: { action: 'reschedule', dateLabel, time },
-        }).then(applyState);
-        return;
+        });
+        if (!res.ok) return { ok: false, error: res.error };
+        applyState(res);
+        return { ok: true };
       }
       setState((s) => ({
         ...s,
@@ -379,6 +384,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ...s.notifications,
         ],
       }));
+      return { ok: true };
     },
     [apiMode],
   );
@@ -439,7 +445,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (apiMode) {
         const res = await api('/api/bank-account', {
           method: 'PUT',
-          body: { bankName: bank.name, last4: bank.last4 },
+          body: {
+            bankName: bank.name,
+            last4: bank.last4,
+            ...(bank.accountNumber ? { accountNumber: bank.accountNumber } : {}),
+            ...(bank.bankCode ? { bankCode: bank.bankCode } : {}),
+            ...(bank.accountName ? { accountName: bank.accountName } : {}),
+          },
         });
         if (!res.ok) return { ok: false, error: res.error };
         applyState(res);

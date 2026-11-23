@@ -31,11 +31,14 @@ interface BankRow {
 export default async function walletRoutes(app: FastifyInstance) {
   app.post<{ Body: WithdrawBody }>('/api/wallet/withdraw', { preHandler: requireAuth }, async (request, reply) => {
     const userId = request.userId!;
-    const amount = Math.round(Number(request.body.amount ?? 0));
-    const requestKey = (request.body.requestKey ?? '').trim() || null;
+    const amount = Math.round(Number(request.body?.amount ?? 0));
+    const requestKey = String(request.body?.requestKey ?? '').trim() || null;
     const user = await findUserById(userId);
     if (!user) return reply.code(404).send({ error: 'Account not found.' });
     if (!(amount > 0)) return reply.code(400).send({ error: 'Enter an amount to withdraw.' });
+    if (requestKey && requestKey.length > 100) {
+      return reply.code(400).send({ error: 'That withdrawal request is invalid.' });
+    }
     if (!payoutsConfigured()) {
       return reply.code(503).send({ error: 'Withdrawals are paused until a payout provider is connected.' });
     }
@@ -112,11 +115,14 @@ export default async function walletRoutes(app: FastifyInstance) {
   });
 
   app.put<{ Body: BankBody }>('/api/bank-account', { preHandler: requireAuth }, async (request, reply) => {
-    const bankName = (request.body.bankName ?? '').trim();
-    const accountNumber = (request.body.accountNumber ?? '').replace(/\D/g, '');
-    const bankCode = (request.body.bankCode ?? '').replace(/\D/g, '');
-    const accountName = (request.body.accountName ?? '').trim();
-    const last4 = (request.body.last4 ?? '').replace(/\D/g, '').slice(-4) || accountNumber.slice(-4);
+    const body = request.body ?? {};
+    const bankName = String(body.bankName ?? '').trim().slice(0, 80);
+    const accountNumber = String(body.accountNumber ?? '').replace(/\D/g, '');
+    const bankCode = String(body.bankCode ?? '').replace(/\D/g, '').slice(0, 10);
+    const accountName = String(body.accountName ?? '').trim().slice(0, 120);
+    const last4 = accountNumber
+      ? accountNumber.slice(-4)
+      : String(body.last4 ?? '').replace(/\D/g, '').slice(-4);
     if (!bankName) return reply.code(400).send({ error: 'Enter a bank name.' });
     if (accountNumber && accountNumber.length !== 10) {
       return reply.code(400).send({ error: 'Enter the 10-digit account number.' });

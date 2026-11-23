@@ -6,17 +6,16 @@ import { formatNaira } from '../data';
 export default function DashHeader({ children }: { children: ReactNode }) {
   const { totalEarned, totalRecycled, monthKg, collections, pending, persona, user } = useApp();
   const isNew = persona === 'new' && totalRecycled === 0;
-  const monthCount =
-    persona === 'returning'
-      ? collections.filter((c) => ['upcoming', 'assigned', 'en_route', 'arrived'].includes(c.status)).length + 2
-      : collections.length;
+  const activeCount = collections.filter((c) =>
+    ['upcoming', 'assigned', 'en_route', 'arrived'].includes(c.status),
+  ).length;
   const firstName = user.name.split(' ')[0];
 
   const stats = [
     {
       label: 'Total Earned',
       value: formatNaira(totalEarned),
-      sub: isNew ? 'Earn on your first pickup' : '+₦3,400 this month',
+      sub: isNew ? 'Earn on your first pickup' : 'Lifetime earnings',
       icon: Wallet,
       bg: '#E8F5E9',
       color: '#2E7D32',
@@ -24,7 +23,7 @@ export default function DashHeader({ children }: { children: ReactNode }) {
     {
       label: 'Total Recycled',
       value: `${totalRecycled.toLocaleString('en-NG')} kg`,
-      sub: isNew ? 'Bronze tier at 100 kg' : 'Gold Recycler tier',
+      sub: isNew ? 'Bronze tier at 100 kg' : user.tier,
       icon: Recycle,
       bg: '#FFF3E0',
       color: '#E08A00',
@@ -32,7 +31,7 @@ export default function DashHeader({ children }: { children: ReactNode }) {
     {
       label: 'This Month',
       value: `${monthKg} kg`,
-      sub: `${monthCount} ${monthCount === 1 ? 'collection' : 'collections'}`,
+      sub: `${activeCount} ${activeCount === 1 ? 'pickup' : 'pickups'} scheduled`,
       icon: TrendingUp,
       bg: '#E3F2FD',
       color: '#1976D2',
@@ -40,7 +39,7 @@ export default function DashHeader({ children }: { children: ReactNode }) {
     {
       label: 'Pending',
       value: formatNaira(pending),
-      sub: isNew ? 'Nothing pending yet' : 'Processing',
+      sub: isNew || pending === 0 ? 'Nothing pending' : 'Awaiting release',
       icon: RotateCcw,
       bg: '#EFEBE9',
       color: '#795548',
@@ -59,7 +58,7 @@ export default function DashHeader({ children }: { children: ReactNode }) {
         <p>
           {isNew
             ? 'Welcome to EcoCycle Hub — one pickup is all it takes 🌱'
-            : 'Your recycling dashboard — Gold Recycler 🥇'}
+            : `Your recycling dashboard — ${user.tier}`}
         </p>
       </header>
 

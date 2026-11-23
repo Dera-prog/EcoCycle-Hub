@@ -26,8 +26,8 @@ export function LineChart({
   const padB = 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
-  const peak = max ?? Math.max(...values) * 1.08;
-  const tickList = ticks ?? [0, peak * 0.25, peak * 0.5, peak * 0.75, peak];
+  const peak = (max ?? Math.max(...values) * 1.08) || 1;
+  const tickList = ticks ?? [0, peak * 0.25, peak * 0.5, peak * 0.75, peak].map((t) => Math.round(t));
   const x = (i: number) => padL + (i / Math.max(1, values.length - 1)) * plotW;
   const y = (v: number) => padT + plotH - (v / peak) * plotH;
   const line = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');

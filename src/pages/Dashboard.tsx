@@ -52,7 +52,7 @@ function shortDate(iso: string) {
 }
 
 export default function Dashboard() {
-  const { collections, cancelCollection, rescheduleCollection, persona, user, isFresh, apiMode } = useApp();
+  const { collections, cancelCollection, rescheduleCollection, persona, user, isFresh, apiMode, payments } = useApp();
   const [filter, setFilter] = useState<Filter>('All');
   const [reschedule, setReschedule] = useState<Collection | null>(null);
   const [cancel, setCancel] = useState<Collection | null>(null);
@@ -68,6 +68,55 @@ export default function Dashboard() {
     );
   }, [collections, filter]);
 
+  // Live accounts chart their own payment rows; the marketing demo keeps its
+  // designed sample chart.
+  const earnings = useMemo(() => {
+    if (!apiMode) {
+      return {
+        values: monthlyEarnings,
+        labels: months,
+        total: 48200,
+        max: 2000 as number | undefined,
+        ticks: [0, 500, 1000, 1500, 2000] as number[] | undefined,
+      };
+    }
+    const now = new Date();
+    const values = new Array<number>(12).fill(0);
+    const labels: string[] = [];
+    for (let i = 11; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      labels.push(months[d.getMonth()]);
+    }
+    let total = 0;
+    for (const p of payments) {
+      if (p.company === 'Bank withdrawal' || !p.createdAt) continue;
+      const d = new Date(p.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const diff = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth());
+      if (diff < 0 || diff > 11) continue;
+      values[11 - diff] += p.amount;
+      total += p.amount;
+    }
+    return { values, labels, total, max: undefined, ticks: undefined };
+  }, [apiMode, payments]);
+
+  const breakdown = useMemo(() => {
+    if (!apiMode) return donutSegments;
+    const weights: Record<string, number> = { Plastic: 0, Metal: 0, Paper: 0, Other: 0 };
+    let total = 0;
+    for (const c of collections) {
+      if (c.status !== 'completed') continue;
+      const kg = c.confirmedWeight ?? c.weight;
+      if (!(kg > 0)) continue;
+      const label =
+        c.category === 'plastic' ? 'Plastic' : c.category === 'metal' ? 'Metal' : c.category === 'paper' ? 'Paper' : 'Other';
+      weights[label] += kg;
+      total += kg;
+    }
+    if (total === 0) return donutSegments.map((s) => ({ ...s, value: 0 }));
+    return donutSegments.map((s) => ({ ...s, value: Math.round((weights[s.label] / total) * 100) }));
+  }, [apiMode, collections]);
+
   useEffect(() => {
     if (!reschedule) return;
     const t = new Date();
@@ -77,6 +126,22 @@ export default function Dashboard() {
   }, [reschedule]);
 
   const openReceipt = (c: Collection) => setReceipt(c);
+
+  const confirmReschedule = async () => {
+    if (!reschedule || !newDate) return;
+    const id = reschedule.id;
+    setReschedule(null);
+    const result = await rescheduleCollection(id, shortDate(newDate), newTime);
+    show(result.ok ? 'Pickup rescheduled successfully.' : result.error ?? 'Could not reschedule the pickup.');
+  };
+
+  const confirmCancel = async () => {
+    if (!cancel) return;
+    const id = cancel.id;
+    setCancel(null);
+    const result = await cancelCollection(id);
+    show(result.ok ? 'Pickup cancelled. You can schedule another anytime.' : result.error ?? 'Could not cancel the pickup.');
+  };
 
   const firstName = user.name.split(' ')[0];
   const starterRates = categories.filter((c) =>
@@ -96,7 +161,7 @@ export default function Dashboard() {
             </h2>
             <p>
               Your account is ready. Book one free pickup and we handle the sorting, weighing and
-              payment — straight to your bank within 24 hours.
+              payment — earnings land in your EcoCycle wallet once the pickup is verified.
             </p>
             <div className="welcome-actions">
               <Link to="/dashboard/schedule" className="btn btn-white">
@@ -177,7 +242,7 @@ export default function Dashboard() {
               </span>
               <div>
                 <strong>Link a payout account</strong>
-                <span>Get paid within 24 hours of pickup</span>
+                <span>Withdraw earnings once they are released</span>
               </div>
               <Link to="/dashboard/wallet" className="setup-cta">
                 Add <ArrowRight size={14} />
@@ -251,13 +316,13 @@ export default function Dashboard() {
         <section className="card chart-card" aria-label="Monthly earnings">
           <div className="card-head">
             <h2>Monthly Earnings</h2>
-            <strong className="chart-total">{formatNaira(48200)}</strong>
+            <strong className="chart-total">{formatNaira(earnings.total)}</strong>
           </div>
           <LineChart
-            values={monthlyEarnings}
-            labels={months}
-            max={2000}
-            ticks={[0, 500, 1000, 1500, 2000]}
+            values={earnings.values}
+            labels={earnings.labels}
+            max={earnings.max}
+            ticks={earnings.ticks}
             formatTick={(v) => `₦${v.toLocaleString('en-NG')}`}
             height={220}
           />
@@ -265,9 +330,9 @@ export default function Dashboard() {
 
         <section className="card donut-card" aria-label="Waste breakdown">
           <h2>Breakdown</h2>
-          <Donut segments={donutSegments} size={172} thickness={24} />
+          <Donut segments={breakdown} size={172} thickness={24} />
           <ul className="donut-legend">
-            {donutSegments.map((s) => (
+            {breakdown.map((s) => (
               <li key={s.label}>
                 <span>
                   <i style={{ background: s.color }} /> {s.label}
@@ -323,8 +388,8 @@ export default function Dashboard() {
             </ol>
             <p className="journey-note">
               <Sparkles size={14} /> {upcomingCount} upcoming{' '}
-              {upcomingCount === 1 ? 'pickup' : 'pickups'} · payouts release 24 hours after
-              verification.
+              {upcomingCount === 1 ? 'pickup' : 'pickups'} · earnings move to your wallet once the
+              pickup is verified.
             </p>
             <Link to="/dashboard/schedule" className="btn btn-primary btn-sm journey-cta">
               <Plus size={15} /> Book another pickup
@@ -485,12 +550,7 @@ export default function Dashboard() {
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => {
-                if (!reschedule || !newDate) return;
-                rescheduleCollection(reschedule.id, shortDate(newDate), newTime);
-                setReschedule(null);
-                show('Pickup rescheduled successfully.');
-              }}
+              onClick={() => void confirmReschedule()}
             >
               Save new slot
             </button>
@@ -537,12 +597,7 @@ export default function Dashboard() {
             <button
               type="button"
               className="btn btn-danger"
-              onClick={() => {
-                if (!cancel) return;
-                cancelCollection(cancel.id);
-                setCancel(null);
-                show('Pickup cancelled. You can schedule another anytime.');
-              }}
+              onClick={() => void confirmCancel()}
             >
               Yes, cancel
             </button>
@@ -570,7 +625,7 @@ export default function Dashboard() {
               className="btn btn-primary"
               onClick={() => {
                 setReceipt(null);
-                show('Receipt sent to amaka@gmail.com.');
+                show(`Receipt sent to ${user.email || 'your email'}.`);
               }}
             >
               <Download size={16} /> Email receipt
