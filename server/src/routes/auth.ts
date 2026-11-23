@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import bcrypt from 'bcryptjs';
 import { findUserByEmail, snapshotFor, pool } from '../db.js';
 import { signToken, requireAuth } from '../auth.js';
+import { platformAccount, postLedger, userAccounts, walletBalances } from '../ledger.js';
 import { normalizePhone } from '../phone.js';
+import { settlePayout, type PayoutRow } from '../payouts.js';
 
 interface SignUpBody {
   name?: string;
@@ -101,11 +103,38 @@ export default async function authRoutes(app: FastifyInstance) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Open payouts hold real money; close them first so the reset can zero
+      // every balance without stranding funds in the clearing account.
+      const open = await client.query<PayoutRow>(
+        `SELECT * FROM payouts WHERE user_id = $1 AND status IN ('pending', 'processing') FOR UPDATE`,
+        [userId],
+      );
+      for (const payout of open.rows) {
+        await settlePayout(client, payout, 'failed', 'Demo reset');
+      }
+
+      const { available, pending } = await walletBalances(client, userId);
+      if (available > 0 || pending > 0) {
+        const accounts = await userAccounts(client, userId);
+        const funder = await platformAccount(client, 'platform_earnings');
+        const legs = [
+          ...(available > 0
+            ? [{ accountId: accounts.wallet, direction: 'debit' as const, amount: available }]
+            : []),
+          ...(pending > 0
+            ? [{ accountId: accounts.pending, direction: 'debit' as const, amount: pending }]
+            : []),
+          { accountId: funder, direction: 'credit' as const, amount: available + pending },
+        ];
+        await postLedger(client, { type: 'demo_reset', id: userId, memo: 'Demo reset' }, legs);
+      }
+
       await client.query('DELETE FROM collections WHERE user_id = $1', [userId]);
       await client.query('DELETE FROM payments WHERE user_id = $1', [userId]);
       await client.query('DELETE FROM notifications WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM payouts WHERE user_id = $1', [userId]);
       await client.query(
-        `UPDATE users SET persona = 'new', tier = 'New Recycler', balance = 0, pending = 0,
+        `UPDATE users SET persona = 'new', tier = 'New Recycler',
          total_earned = 0, total_recycled = 0, month_kg = 0 WHERE id = $1`,
         [userId],
       );

@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { config } from './config.js';
+import { walletBalances } from './ledger.js';
 
 const { Pool } = pg;
 
@@ -24,8 +25,6 @@ export interface UserRow {
   role: 'customer' | 'agent' | 'depot' | 'admin';
   persona: 'returning' | 'new';
   tier: string;
-  balance: string;
-  pending: string;
   total_earned: string;
   total_recycled: string;
   month_kg: string;
@@ -65,7 +64,7 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
   const user = await findUserById(userId);
   if (!user) return null;
 
-  const [bank, collections, notifications, payments] = await Promise.all([
+  const [bank, collections, notifications, payments, balances] = await Promise.all([
     pool.query('SELECT bank_name, last4 FROM bank_accounts WHERE user_id = $1', [userId]),
     pool.query(
       `SELECT c.id, c.category, c.company, c.date_label, c.time, c.weight, c.confirmed_weight,
@@ -83,17 +82,20 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
       [userId],
     ),
     pool.query(
-      `SELECT id, company, date_label, weight, amount, status FROM payments
-       WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT p.id, p.company, p.date_label, p.weight, p.amount, p.status, po.failure_reason
+       FROM payments p
+       LEFT JOIN payouts po ON 'pay-' || po.id = p.id
+       WHERE p.user_id = $1 ORDER BY p.created_at DESC`,
       [userId],
     ),
+    walletBalances(pool, userId),
   ]);
 
   return {
     persona: user.persona,
     user: { name: user.name, email: user.email ?? '', phone: user.phone, role: user.role, tier: user.tier },
-    balance: Number(user.balance),
-    pending: Number(user.pending),
+    balance: balances.available,
+    pending: balances.pending,
     totalEarned: Number(user.total_earned),
     totalRecycled: Number(user.total_recycled),
     monthKg: Number(user.month_kg),
@@ -130,6 +132,7 @@ export async function snapshotFor(userId: string): Promise<Snapshot | null> {
       weight: r.weight === null ? null : Number(r.weight),
       amount: r.amount,
       status: r.status,
+      ...(r.failure_reason ? { failureReason: r.failure_reason } : {}),
     })),
     bank: bank.rows[0]
       ? { name: bank.rows[0].bank_name, last4: bank.rows[0].last4 }

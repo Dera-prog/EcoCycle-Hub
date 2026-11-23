@@ -4,8 +4,10 @@ import type {
   BankAccount,
   Collection,
   Notification,
+  OpsPayout,
   OpsPickup,
   Payment,
+  PendingEarning,
   PickupInput,
   ServiceArea,
 } from './types';
@@ -49,6 +51,9 @@ export interface OtpRequestResult {
 export interface OpsBoard {
   pickups: OpsPickup[];
   agents: Array<{ id: string; name: string; phone: string }>;
+  payouts: OpsPayout[];
+  pendingEarnings: PendingEarning[];
+  provider: string;
 }
 
 interface AppContextValue extends AppState {
@@ -60,6 +65,9 @@ interface AppContextValue extends AppState {
   loadOps: () => Promise<{ ok: boolean; board?: OpsBoard; error?: string }>;
   assignPickup: (id: string, agentId: string) => Promise<ActionResult>;
   movePickup: (id: string, action: string, weight?: number) => Promise<ActionResult>;
+  confirmPayout: (id: string, outcome: 'paid' | 'failed') => Promise<ActionResult>;
+  retryPayout: (id: string) => Promise<ActionResult>;
+  settleEarnings: (userId: string) => Promise<ActionResult>;
   addPickup: (input: PickupInput) => Promise<Collection | null>;
   cancelCollection: (id: string) => void;
   rescheduleCollection: (id: string, dateLabel: string, time: string) => void;
@@ -135,6 +143,10 @@ interface ApiResult {
     pickups?: OpsPickup[];
     agents?: Array<{ id: string; name: string; phone: string }>;
     pickup?: OpsPickup;
+    payouts?: OpsPayout[];
+    pendingEarnings?: PendingEarning[];
+    provider?: string;
+    payout?: { status: string };
   } | null;
   error?: string;
 }
@@ -228,12 +240,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const pickups = await api('/api/ops/pickups');
     if (!pickups.ok) return { ok: false, error: pickups.error };
     let agents: OpsBoard['agents'] = [];
+    let payouts: OpsPayout[] = [];
+    let pendingEarnings: PendingEarning[] = [];
+    let provider = '';
     if (state.user.role === 'admin') {
-      const res = await api('/api/ops/agents');
-      if (res.ok) agents = res.data?.agents ?? [];
+      const [agentRes, payoutRes] = await Promise.all([api('/api/ops/agents'), api('/api/ops/payouts')]);
+      if (agentRes.ok) agents = agentRes.data?.agents ?? [];
+      if (payoutRes.ok) {
+        payouts = payoutRes.data?.payouts ?? [];
+        pendingEarnings = payoutRes.data?.pendingEarnings ?? [];
+        provider = payoutRes.data?.provider ?? '';
+      }
     }
-    return { ok: true, board: { pickups: pickups.data?.pickups ?? [], agents } };
+    return {
+      ok: true,
+      board: { pickups: pickups.data?.pickups ?? [], agents, payouts, pendingEarnings, provider },
+    };
   }, [apiMode, state.user.role]);
+
+  const confirmPayout = useCallback(async (id: string, outcome: 'paid' | 'failed'): Promise<ActionResult> => {
+    const res = await api(`/api/ops/payouts/${id}/confirm`, { method: 'POST', body: { outcome } });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
+  }, []);
+
+  const retryPayout = useCallback(async (id: string): Promise<ActionResult> => {
+    const res = await api(`/api/ops/payouts/${id}/retry`, { method: 'POST', body: {} });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
+  }, []);
+
+  const settleEarnings = useCallback(async (userId: string): Promise<ActionResult> => {
+    const res = await api(`/api/ops/customers/${userId}/settle`, { method: 'POST', body: {} });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
+  }, []);
 
   const assignPickup = useCallback(async (id: string, agentId: string): Promise<ActionResult> => {
     const res = await api(`/api/ops/pickups/${id}/assign`, { method: 'POST', body: { agentId } });
@@ -348,8 +386,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const withdraw = useCallback(
     async (amount: number): Promise<ActionResult> => {
       if (apiMode) {
-        const res = await api('/api/wallet/withdraw', { method: 'POST', body: { amount } });
-        if (!res.ok) return { ok: false, error: res.error };
+        const requestKey = `wd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const res = await api('/api/wallet/withdraw', { method: 'POST', body: { amount, requestKey } });
+        if (!res.ok) {
+          applyState(res);
+          return { ok: false, error: res.error };
+        }
         applyState(res);
         return { ok: true };
       }
@@ -494,6 +536,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loadOps,
       assignPickup,
       movePickup,
+      confirmPayout,
+      retryPayout,
+      settleEarnings,
       addPickup,
       cancelCollection,
       rescheduleCollection,
@@ -507,7 +552,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signOut,
       resetDemo,
     }),
-    [state, unreadCount, isFresh, apiMode, serviceAreas, refreshState, loadOps, assignPickup, movePickup, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, requestOtp, verifyOtp, signOut, resetDemo],
+    [state, unreadCount, isFresh, apiMode, serviceAreas, refreshState, loadOps, assignPickup, movePickup, confirmPayout, retryPayout, settleEarnings, addPickup, cancelCollection, rescheduleCollection, withdraw, markAllRead, updateBank, signInDemo, signUpDemo, requestOtp, verifyOtp, signOut, resetDemo],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

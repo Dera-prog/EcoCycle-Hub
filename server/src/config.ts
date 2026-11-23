@@ -24,6 +24,19 @@ if (smsProvider !== 'console' && smsProvider !== 'none') {
   throw new Error('SMS_PROVIDER must be "console" or "none"');
 }
 
+const paymentsProvider = (process.env.PAYMENTS_PROVIDER?.trim() || (isProduction ? 'none' : 'console')) as
+  | 'console'
+  | 'paystack'
+  | 'none';
+if (!['console', 'paystack', 'none'].includes(paymentsProvider)) {
+  throw new Error('PAYMENTS_PROVIDER must be "console", "paystack" or "none"');
+}
+
+const paystackSecret = process.env.PAYSTACK_SECRET_KEY?.trim() || '';
+if (paymentsProvider === 'paystack' && !paystackSecret) {
+  throw new Error('PAYSTACK_SECRET_KEY must be set when PAYMENTS_PROVIDER=paystack');
+}
+
 export const config = {
   isProduction,
   port: Number(process.env.PORT ?? 4000),
@@ -40,6 +53,9 @@ export const config = {
   trustProxy: process.env.TRUST_PROXY !== 'false',
   smsProvider,
   smsFrom: process.env.SMS_FROM?.trim() || 'EcoCycle',
+  paymentsProvider,
+  paystackSecret,
+  paystackApi: process.env.PAYSTACK_API_URL?.trim() || 'https://api.paystack.co',
   otp: {
     ttlSeconds: Number(process.env.OTP_TTL_SECONDS ?? 300),
     maxAttempts: Number(process.env.OTP_MAX_ATTEMPTS ?? 5),

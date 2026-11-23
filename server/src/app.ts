@@ -9,7 +9,14 @@ import otpRoutes from './routes/otp.js';
 import opsRoutes from './routes/ops.js';
 import collectionRoutes from './routes/collections.js';
 import walletRoutes from './routes/wallet.js';
+import paymentRoutes from './routes/payments.js';
 import miscRoutes from './routes/misc.js';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    rawBody?: Buffer;
+  }
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -19,6 +26,18 @@ export async function buildApp(): Promise<FastifyInstance> {
     },
     bodyLimit: 64 * 1024,
     trustProxy: config.trustProxy,
+  });
+
+  // The provider signs the exact bytes it sent, so keep the raw body around
+  // for webhook signature checks.
+  app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
+    const raw = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    request.rawBody = raw;
+    try {
+      done(null, JSON.parse(raw.toString('utf8')));
+    } catch {
+      done(new Error('Invalid JSON body'), undefined);
+    }
   });
 
   await initMonitoring(app.log);
@@ -35,6 +54,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(opsRoutes);
   await app.register(collectionRoutes);
   await app.register(walletRoutes);
+  await app.register(paymentRoutes);
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const statusCode = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;

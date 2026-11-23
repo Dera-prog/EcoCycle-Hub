@@ -236,6 +236,8 @@ blockquote { margin: 0; }
 .badge-upcoming { background: var(--brand-600); color: #fff; }
 .badge-paid { background: var(--brand-100); color: var(--brand-700); }
 .badge-pending { background: #fff3e0; color: var(--amber); }
+.badge-processing { background: #e3f2fd; color: #1565c0; }
+.badge-failed { background: #fff5f5; color: var(--danger); }
 .badge-cancelled { background: var(--surface-2); color: var(--muted); }
 
 .stars { display: inline-flex; gap: 3px; }
@@ -2107,6 +2109,7 @@ blockquote { margin: 0; }
 .pay-copy { display: grid; flex: 1; min-width: 0; line-height: 1.35; }
 .pay-copy strong { font-size: 0.78rem; }
 .pay-copy span { font-size: 0.68rem; color: var(--muted); }
+.pay-copy .pay-reason { color: var(--danger); }
 .pay-right { display: grid; justify-items: end; gap: 3px; }
 .pay-right > strong { font-size: 0.82rem; color: var(--brand-700); }
 
@@ -3219,6 +3222,18 @@ blockquote { margin: 0; }
 .ops-status.is-arrived { background: #e3f2fd; color: #1565c0; }
 .ops-status.is-completed { background: var(--brand-100); color: var(--brand-700); }
 .ops-status.is-cancelled { background: #fff5f5; color: var(--danger); }
+.ops-status.is-pending { background: #fff3e0; color: var(--amber); }
+.ops-status.is-processing { background: #e3f2fd; color: #1565c0; }
+.ops-status.is-paid { background: var(--brand-100); color: var(--brand-700); }
+.ops-status.is-failed { background: #fff5f5; color: var(--danger); }
+.ops-note {
+  margin-top: 18px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
 .ops-meta { display: grid; gap: 6px; font-size: 0.75rem; color: var(--muted); }
 .ops-meta span { display: flex; align-items: center; gap: 6px; }
 .ops-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

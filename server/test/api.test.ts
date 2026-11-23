@@ -1,5 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import pg from 'pg';
 
 const ADMIN_URL = process.env.TEST_ADMIN_URL ?? 'postgres://ecocycle:ecocycle@localhost:5436/postgres';
@@ -457,4 +458,189 @@ test('the ops user list is restricted to admins', async () => {
 
   const anonymous = await app.inject({ method: 'GET', url: '/api/ops/users' });
   assert.equal(anonymous.statusCode, 401);
+});
+
+async function ledgerDifference(): Promise<number> {
+  const { rows } = await pool.query<{ diff: string }>(
+    `SELECT COALESCE(SUM(CASE direction WHEN 'debit' THEN amount ELSE -amount END), 0)::bigint AS diff
+     FROM ledger_entries`,
+  );
+  return Number(rows[0].diff);
+}
+
+test('settlement moves pending earnings into the withdrawable balance', async () => {
+  const admin = await signIn('admin@ecocycle.ng', 'demo1234');
+  const users = await app.inject({
+    method: 'GET',
+    url: '/api/ops/users',
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  const recycler = (json(users).users as Array<{ id: string; email: string }>).find(
+    (u) => u.email === 'test@ecocycle.ng',
+  );
+  assert.ok(recycler);
+
+  const settled = await app.inject({
+    method: 'POST',
+    url: `/api/ops/customers/${recycler!.id}/settle`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: {},
+  });
+  assert.equal(settled.statusCode, 200);
+  assert.equal((json(settled) as { settled: number }).settled, 324);
+
+  const customer = await signIn('test@ecocycle.ng', 'secret123');
+  const me = await app.inject({
+    method: 'GET',
+    url: '/api/me',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+  });
+  const state = json(me).state as { balance: number; pending: number; payments: Array<{ status: string }> };
+  assert.equal(state.balance, 324);
+  assert.equal(state.pending, 0);
+  assert.equal(state.payments[0].status, 'Paid');
+  assert.equal(await ledgerDifference(), 0);
+});
+
+test('withdrawals are held as payouts, settle idempotently and refund on failure', async () => {
+  const admin = await signIn('admin@ecocycle.ng', 'demo1234');
+  const customer = await signIn('test@ecocycle.ng', 'secret123');
+  const recycler = await pool.query<{ id: string }>("SELECT id FROM users WHERE email = 'test@ecocycle.ng'");
+  const recyclerId = recycler.rows[0].id;
+
+  const bank = await app.inject({
+    method: 'PUT',
+    url: '/api/bank-account',
+    headers: { authorization: `Bearer ${customer.body.token}` },
+    payload: { bankName: 'GTBank', last4: '1234' },
+  });
+  assert.equal(bank.statusCode, 200);
+
+  const withdraw = (amount: number, requestKey: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/wallet/withdraw',
+      headers: { authorization: `Bearer ${customer.body.token}` },
+      payload: { amount, requestKey },
+    });
+
+  const first = await withdraw(324, 'wd-test-1');
+  assert.equal(first.statusCode, 200);
+  assert.equal((json(first).state as { balance: number }).balance, 0);
+
+  // The same request key must not withdraw twice.
+  const replay = await withdraw(324, 'wd-test-1');
+  assert.equal(replay.statusCode, 200);
+  assert.equal((json(replay).state as { balance: number }).balance, 0);
+
+  const broke = await withdraw(100, 'wd-test-2');
+  assert.equal(broke.statusCode, 400);
+
+  const queue = await app.inject({
+    method: 'GET',
+    url: '/api/ops/payouts',
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  assert.equal(queue.statusCode, 200);
+  const board = json(queue) as {
+    provider: string;
+    payouts: Array<{ id: string; amount: number; status: string; customer: { id: string } }>;
+  };
+  assert.equal(board.provider, 'console');
+  const payout = board.payouts.find((p) => p.customer.id === recyclerId && p.amount === 324);
+  assert.ok(payout);
+  assert.equal(payout!.status, 'processing');
+
+  const confirm = await app.inject({
+    method: 'POST',
+    url: `/api/ops/payouts/${payout!.id}/confirm`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: { outcome: 'paid' },
+  });
+  assert.equal(confirm.statusCode, 200);
+  assert.equal((json(confirm) as { payout: { status: string } }).payout.status, 'paid');
+
+  const closeTwice = await app.inject({
+    method: 'POST',
+    url: `/api/ops/payouts/${payout!.id}/confirm`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: { outcome: 'paid' },
+  });
+  assert.equal(closeTwice.statusCode, 409);
+
+  // A failed transfer returns the money to the wallet, and a retry holds it again.
+  const amaka = await signIn('amaka@gmail.com', 'demo1234');
+  const amakaWithdraw = await app.inject({
+    method: 'POST',
+    url: '/api/wallet/withdraw',
+    headers: { authorization: `Bearer ${amaka.body.token}` },
+    payload: { amount: 1000 },
+  });
+  assert.equal(amakaWithdraw.statusCode, 200);
+  const afterWithdraw = json(amakaWithdraw).state as { balance: number };
+  assert.equal(afterWithdraw.balance, 42200);
+
+  const amakaQueue = await app.inject({
+    method: 'GET',
+    url: '/api/ops/payouts',
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  const failedPayout = (json(amakaQueue).payouts as Array<{ id: string; amount: number; status: string }>).find(
+    (p) => p.amount === 1000 && p.status === 'processing',
+  );
+  assert.ok(failedPayout);
+
+  const fail = await app.inject({
+    method: 'POST',
+    url: `/api/ops/payouts/${failedPayout!.id}/confirm`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+    payload: { outcome: 'failed', reason: 'Bank rejected the transfer' },
+  });
+  assert.equal(fail.statusCode, 200);
+
+  const refunded = await app.inject({
+    method: 'GET',
+    url: '/api/me',
+    headers: { authorization: `Bearer ${amaka.body.token}` },
+  });
+  const refundedState = json(refunded).state as {
+    balance: number;
+    payments: Array<{ status: string; failureReason?: string }>;
+  };
+  assert.equal(refundedState.balance, 43200);
+  assert.equal(refundedState.payments[0].status, 'Failed');
+  assert.equal(refundedState.payments[0].failureReason, 'Bank rejected the transfer');
+
+  const retry = await app.inject({
+    method: 'POST',
+    url: `/api/ops/payouts/${failedPayout!.id}/retry`,
+    headers: { authorization: `Bearer ${admin.body.token}` },
+  });
+  assert.equal(retry.statusCode, 200);
+  assert.equal((json(retry) as { payout: { status: string } }).payout.status, 'processing');
+
+  const reheld = await app.inject({
+    method: 'GET',
+    url: '/api/me',
+    headers: { authorization: `Bearer ${amaka.body.token}` },
+  });
+  assert.equal((json(reheld).state as { balance: number }).balance, 42200);
+  assert.equal(await ledgerDifference(), 0);
+});
+
+test('paystack webhooks stay closed until a provider is configured', async () => {
+  const { verifyPaystackSignature } = await import('../src/payments.js');
+  const raw = Buffer.from(JSON.stringify({ event: 'transfer.success', data: { reference: 'x' } }));
+  const secret = 'sk_test_signature';
+  const signature = createHmac('sha512', secret).update(raw).digest('hex');
+  assert.equal(verifyPaystackSignature(secret, raw, signature), true);
+  assert.equal(verifyPaystackSignature(secret, raw, 'not-the-signature'), false);
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/webhooks/paystack',
+    headers: { 'content-type': 'application/json', 'x-paystack-signature': signature },
+    payload: raw.toString('utf8'),
+  });
+  assert.equal(response.statusCode, 503);
 });
